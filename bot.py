@@ -84,6 +84,7 @@ def _rating_keyboard(phrase_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("Good",  callback_data=f"rate:{phrase_id}:4"),
             InlineKeyboardButton("Easy",  callback_data=f"rate:{phrase_id}:5"),
         ],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
 
 
@@ -97,10 +98,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(MENU_TEXT, reply_markup=_main_menu_keyboard())
 
 
-async def cb_show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cb_show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(MENU_TEXT, reply_markup=_main_menu_keyboard())
+    return ConversationHandler.END
 
 
 # ── Add phrase conversation ───────────────────────────────────────────────────
@@ -192,7 +194,8 @@ async def _show_next(message, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     item = queue[0]
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Show Answer", callback_data=f"show:{item['id']}")]
+        [InlineKeyboardButton("Show Answer", callback_data=f"show:{item['id']}")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
     remaining = len(queue)
     await message.reply_text(
@@ -328,6 +331,7 @@ async def gen_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(l, callback_data=f"level:{l}") for l in ("A1", "A2", "B1")],
         [InlineKeyboardButton(l, callback_data=f"level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
     await msg.reply_text("Choose your English level:", reply_markup=keyboard)
     return GEN_LEVEL
@@ -344,6 +348,7 @@ async def gen_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         [InlineKeyboardButton(t, callback_data=f"topic:{t}") for t in pair]
         for pair in [_GEN_TOPICS[i:i+2] for i in range(0, len(_GEN_TOPICS), 2)]
     ]
+    rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu:home")])
     await query.edit_message_text(
         f"Level: <b>{level}</b>\n\nChoose a topic or type your own:",
         parse_mode="HTML",
@@ -564,6 +569,7 @@ async def gram_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(l, callback_data=f"gram_level:{l}") for l in ("A1", "A2", "B1")],
         [InlineKeyboardButton(l, callback_data=f"gram_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
     await msg.reply_text("Choose your English level for grammar practice:", reply_markup=keyboard)
     return GRAM_LEVEL
@@ -619,6 +625,7 @@ async def _show_gram_exercise(message, context: ContextTypes.DEFAULT_TYPE) -> No
         f"<b>{ex['sentence']}</b>\n\n"
         f"Type the missing word:",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
     )
 
 
@@ -644,6 +651,7 @@ async def gram_got_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Next ➡️", callback_data="gram:next"),
+        InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
     ]])
     await update.message.reply_text(
         f"{result_line}\n\n"
@@ -700,6 +708,7 @@ async def cb_pat_menu_generate(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(l, callback_data=f"pat_level:{l}") for l in ("A1", "A2", "B1")],
         [InlineKeyboardButton(l, callback_data=f"pat_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
     await query.message.reply_text("Choose your English level:", reply_markup=keyboard)
     return PAT_LEVEL
@@ -775,10 +784,13 @@ async def _show_pattern(message, context: ContextTypes.DEFAULT_TYPE, index: int)
         f"💡 {p['note']}"
     )
 
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💾 Save", callback_data=f"pat_save:{index}"),
-        InlineKeyboardButton("⏭ Skip", callback_data=f"pat_skip:{index}"),
-    ]])
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💾 Save", callback_data=f"pat_save:{index}"),
+            InlineKeyboardButton("⏭ Skip", callback_data=f"pat_skip:{index}"),
+        ],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+    ])
     await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
@@ -922,6 +934,7 @@ async def drill_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(l, callback_data=f"drill_level:{l}") for l in ("A1", "A2", "B1")],
         [InlineKeyboardButton(l, callback_data=f"drill_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
     await msg.reply_text(
         "🔥 <b>Drill</b>\n\n"
@@ -1004,6 +1017,7 @@ async def _show_drill_question(message, context: ContextTypes.DEFAULT_TYPE) -> N
     await message.reply_text(
         f"<b>{header}</b>\n\n{item['question']}",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
     )
 
 
@@ -1038,7 +1052,10 @@ async def _process_drill_answer(
 
     context.user_data["drill_index"] = index + 1
 
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Next ➡️", callback_data="drill:next")]])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Next ➡️", callback_data="drill:next"),
+        InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+    ]])
     await message.reply_text(
         f"{result_line}\n\n{item['hint']}",
         parse_mode="HTML",
@@ -1133,6 +1150,7 @@ async def read_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(l, callback_data=f"read_level:{l}") for l in ("A1", "A2", "B1")],
         [InlineKeyboardButton(l, callback_data=f"read_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
     ])
     await msg.reply_text("📖 Reading\n\nChoose your English level:", reply_markup=keyboard)
     return READ_LEVEL
@@ -1323,7 +1341,10 @@ def main() -> None:
                 CallbackQueryHandler(add_skip_example, pattern="^skip_example$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", add_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", add_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     gen_conv = ConversationHandler(
@@ -1338,7 +1359,10 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, gen_got_topic_text),
             ],
         },
-        fallbacks=[CommandHandler("cancel", gen_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", gen_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     chat_conv = ConversationHandler(
@@ -1353,7 +1377,10 @@ def main() -> None:
                 CallbackQueryHandler(chat_end_cb, pattern="^chat:end$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", chat_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", chat_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     gram_conv = ConversationHandler(
@@ -1368,7 +1395,10 @@ def main() -> None:
                 CallbackQueryHandler(gram_next, pattern="^gram:next$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", gram_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", gram_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     pat_conv = ConversationHandler(
@@ -1383,7 +1413,10 @@ def main() -> None:
             ],
             PAT_LEVEL: [CallbackQueryHandler(pat_got_level, pattern=r"^pat_level:[ABC][12]$")],
         },
-        fallbacks=[CommandHandler("cancel", pat_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", pat_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     drill_conv = ConversationHandler(
@@ -1399,7 +1432,10 @@ def main() -> None:
                 CallbackQueryHandler(drill_next, pattern="^drill:next$"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", drill_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", drill_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     read_conv = ConversationHandler(
@@ -1410,7 +1446,10 @@ def main() -> None:
         states={
             READ_LEVEL: [CallbackQueryHandler(read_got_level, pattern=r"^read_level:[ABC][12]$")],
         },
-        fallbacks=[CommandHandler("cancel", read_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", read_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
     )
 
     app.add_handler(CommandHandler("start",  cmd_start))
