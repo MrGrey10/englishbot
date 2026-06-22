@@ -18,7 +18,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_phrases
+from ai_generator import generate_grammar_exercises, generate_phrases
 from tutor_chat import tutor_reply
 
 load_dotenv()
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 PHRASE, TRANSLATION, EXAMPLE = range(3)
 GEN_LEVEL, GEN_TOPIC = range(2)
 CHAT_ACTIVE = 0
+GRAM_LEVEL, GRAM_ANSWER = range(2)
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
@@ -53,6 +54,9 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("📊 Stats", callback_data="menu:stats"),
             InlineKeyboardButton("💬 Tutor Chat", callback_data="menu:chat"),
+        ],
+        [
+            InlineKeyboardButton("✍️ Grammar", callback_data="menu:grammar"),
         ],
     ])
 
@@ -510,6 +514,128 @@ async def chat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return ConversationHandler.END
 
 
+# ── Grammar (fill-in-the-blank) ───────────────────────────────────────────────
+
+async def gram_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"gram_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"gram_level:{l}") for l in ("B2", "C1", "C2")],
+    ])
+    await msg.reply_text("Choose your English level for grammar practice:", reply_markup=keyboard)
+    return GRAM_LEVEL
+
+
+async def gram_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    context.user_data["gram_level"] = level
+
+    wait_msg = await query.message.reply_text("Generating exercises... ⏳")
+    try:
+        exercises = await generate_grammar_exercises(level)
+        context.user_data["gram_exercises"] = exercises
+        context.user_data["gram_index"] = 0
+        context.user_data["gram_score"] = 0
+        await wait_msg.delete()
+        await _show_gram_exercise(query.message, context)
+    except Exception as e:
+        logger.error("generate_grammar_exercises error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate exercises. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    return GRAM_ANSWER
+
+
+async def _show_gram_exercise(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    exercises = context.user_data.get("gram_exercises", [])
+    index = context.user_data.get("gram_index", 0)
+    level = context.user_data.get("gram_level", "")
+
+    if index >= len(exercises):
+        score = context.user_data.pop("gram_score", 0)
+        total = len(exercises)
+        context.user_data.pop("gram_exercises", None)
+        context.user_data.pop("gram_index", None)
+        context.user_data.pop("gram_level", None)
+        await message.reply_text(
+            f"Exercise complete! Your score: {score}/{total} 🎉",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    ex = exercises[index]
+    await message.reply_text(
+        f"<b>Exercise {index + 1}/{len(exercises)}</b>  [{level}]\n\n"
+        f"Fill in the blank:\n\n"
+        f"<b>{ex['sentence']}</b>\n\n"
+        f"Type the missing word:",
+        parse_mode="HTML",
+    )
+
+
+async def gram_got_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_answer = update.message.text.strip().lower()
+    exercises = context.user_data.get("gram_exercises", [])
+    index = context.user_data.get("gram_index", 0)
+
+    if index >= len(exercises):
+        return ConversationHandler.END
+
+    ex = exercises[index]
+    correct = ex["answer"].strip().lower()
+    is_correct = user_answer == correct
+
+    if is_correct:
+        context.user_data["gram_score"] = context.user_data.get("gram_score", 0) + 1
+        result_line = "✅ Correct!"
+    else:
+        result_line = f"❌ Wrong. The answer is: <b>{ex['answer']}</b>"
+
+    context.user_data["gram_index"] = index + 1
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Next ➡️", callback_data="gram:next"),
+    ]])
+    await update.message.reply_text(
+        f"{result_line}\n\n"
+        f"<i>{ex['full_sentence']}</i>\n\n"
+        f"💡 {ex['hint']}",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return GRAM_ANSWER
+
+
+async def gram_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await _show_gram_exercise(query.message, context)
+
+    exercises = context.user_data.get("gram_exercises", [])
+    index = context.user_data.get("gram_index", 0)
+    if index >= len(exercises):
+        return ConversationHandler.END
+    return GRAM_ANSWER
+
+
+async def gram_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("gram_exercises", "gram_index", "gram_score", "gram_level"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Grammar practice cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -607,6 +733,21 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", chat_cancel)],
     )
 
+    gram_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("grammar", gram_start),
+            CallbackQueryHandler(gram_start, pattern="^menu:grammar$"),
+        ],
+        states={
+            GRAM_LEVEL: [CallbackQueryHandler(gram_got_level, pattern=r"^gram_level:[ABC][12]$")],
+            GRAM_ANSWER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, gram_got_answer),
+                CallbackQueryHandler(gram_next, pattern="^gram:next$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", gram_cancel)],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -615,6 +756,7 @@ def main() -> None:
     app.add_handler(add_conv)
     app.add_handler(gen_conv)
     app.add_handler(chat_conv)
+    app.add_handler(gram_conv)
 
     app.add_handler(CallbackQueryHandler(cb_show_menu,  pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,    pattern="^menu:review$"))

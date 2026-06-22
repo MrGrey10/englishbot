@@ -70,3 +70,39 @@ Return ONLY the JSON array. No markdown, no code fences, no explanation outside 
         text = text.rstrip("`").strip()
 
     return json.loads(text)
+
+
+async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+
+    prompt = f"""Create {count} English fill-in-the-blank grammar exercises for level {level} ({level_desc}).
+
+Rules:
+- Replace exactly ONE word in each sentence with ___ (three underscores)
+- The missing word must test a grammar point appropriate for {level}: verb forms, tenses, articles, prepositions, modal verbs, etc.
+- Sentences must be realistic, natural everyday English — not textbook-boring
+- Adjust difficulty strictly to {level}: very simple for A1/A2, more complex grammar for B1/B2/C1/C2
+
+Return a JSON array with exactly {count} objects, each with these keys:
+- "sentence": the sentence with ___ replacing the missing word
+- "answer": the single correct word that fills the blank (lowercase)
+- "full_sentence": the complete sentence with the answer filled in
+- "hint": short grammar tip explaining why this answer is correct (1 sentence)
+
+Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
