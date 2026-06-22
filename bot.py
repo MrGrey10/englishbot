@@ -544,12 +544,16 @@ def _start_health_server() -> None:
         def log_message(self, *args):
             pass
 
-    http.server.HTTPServer(("", port), Handler).serve_forever()
+    server = http.server.HTTPServer(("0.0.0.0", port), Handler)
+    logger.info("Health server listening on port %s", port)
+    server.serve_forever()
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    threading.Thread(target=_start_health_server, daemon=True).start()
+
     db.init_db()
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -622,7 +626,6 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_gen_save,    pattern=r"^gen_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_gen_skip,    pattern=r"^gen_skip:\d+$"))
 
-    threading.Thread(target=_start_health_server, daemon=True).start()
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
