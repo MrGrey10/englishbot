@@ -23,8 +23,8 @@ LEVEL_DESCRIPTIONS = {
     "A1": "absolute beginner — very simple, basic everyday phrases only",
     "A2": "elementary — simple phrases for common everyday situations",
     "B1": "intermediate — everyday phrases, can handle familiar topics naturally",
-    "B2": "upper-intermediate — complex expressions, common idioms, natural flow",
-    "C1": "advanced — idiomatic, sophisticated expressions native speakers use freely",
+    "B2": "upper-intermediate — complex expressions, natural flow",
+    "C1": "advanced — sophisticated expressions native speakers use freely",
     "C2": "mastery — highly colloquial, nuanced, natural native-speaker expressions",
 }
 
