@@ -1,0 +1,16 @@
+services:
+  - type: worker
+    name: englishbot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATA_DIR
+        value: /data
+    disk:
+      name: bot-data
+      mountPath: /data
+      sizeGB: 1
