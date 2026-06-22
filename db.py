@@ -9,6 +9,8 @@ _DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 @contextmanager
 def get_db():
+    if not _DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set. Add it to your Render environment variables.")
     url = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
     conn = psycopg2.connect(url)
     try:
