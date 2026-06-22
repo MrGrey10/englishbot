@@ -1,5 +1,7 @@
+import http.server
 import logging
 import os
+import threading
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -528,6 +530,23 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# ── Health check server (required by Render Web Service) ─────────────────────
+
+def _start_health_server() -> None:
+    port = int(os.environ.get("PORT", 8080))
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass
+
+    http.server.HTTPServer(("", port), Handler).serve_forever()
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -603,6 +622,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_gen_save,    pattern=r"^gen_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_gen_skip,    pattern=r"^gen_skip:\d+$"))
 
+    threading.Thread(target=_start_health_server, daemon=True).start()
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

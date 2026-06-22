@@ -1,8 +1,9 @@
 services:
-  - type: worker
+  - type: web
     name: englishbot
     runtime: docker
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
