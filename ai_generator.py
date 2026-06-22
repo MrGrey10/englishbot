@@ -72,6 +72,47 @@ Return ONLY the JSON array. No markdown, no code fences, no explanation outside 
     return json.loads(text)
 
 
+async def generate_patterns(level: str, count: int = 5) -> list[dict]:
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+
+    prompt = f"""Generate {count} English grammar patterns for level {level} ({level_desc}).
+
+A grammar pattern is a sentence structure that native speakers repeat naturally across many situations.
+Instead of memorizing rules, learners internalize the pattern by seeing it used in real sentences.
+
+Rules:
+- Each pattern should be a common, reusable sentence structure (e.g. "I've already ___", "It's worth ___ing", "I can't help ___ing")
+- Choose patterns appropriate for {level}: very simple structures for A1/A2, more complex for B1/B2/C1/C2
+- Provide 3 short realistic example sentences per pattern
+- Each example must have a natural Ukrainian translation
+
+Return a JSON array with exactly {count} objects, each with these keys:
+- "name": short pattern label (e.g. "Present Perfect experience", "used to + verb")
+- "structure": the template showing the pattern (e.g. "I've + past participle", "used to + base verb")
+- "note": one-sentence tip on when/why this pattern is used
+- "examples": array of 3 objects, each with:
+    - "en": the English example sentence (short, 5–15 words)
+    - "uk": natural Ukrainian translation
+
+Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
 async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
     level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
 

@@ -1,4 +1,5 @@
 import http.server
+import json
 import logging
 import os
 import threading
@@ -18,7 +19,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_phrases
+from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases
 from tutor_chat import tutor_reply
 
 load_dotenv()
@@ -33,6 +34,7 @@ PHRASE, TRANSLATION, EXAMPLE = range(3)
 GEN_LEVEL, GEN_TOPIC = range(2)
 CHAT_ACTIVE = 0
 GRAM_LEVEL, GRAM_ANSWER = range(2)
+PAT_LEVEL = 0
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
@@ -57,6 +59,7 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("✍️ Grammar", callback_data="menu:grammar"),
+            InlineKeyboardButton("🎯 Patterns", callback_data="menu:patterns"),
         ],
     ])
 
@@ -636,6 +639,124 @@ async def gram_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return ConversationHandler.END
 
 
+# ── Patterns ─────────────────────────────────────────────────────────────────
+
+async def pat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"pat_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"pat_level:{l}") for l in ("B2", "C1", "C2")],
+    ])
+    await msg.reply_text("Choose your English level for grammar patterns:", reply_markup=keyboard)
+    return PAT_LEVEL
+
+
+async def pat_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    context.user_data["pat_level"] = level
+
+    wait_msg = await query.message.reply_text("Generating patterns... ⏳")
+    try:
+        patterns = await generate_patterns(level)
+        context.user_data["pat_patterns"] = patterns
+        context.user_data["pat_saved"] = 0
+        await wait_msg.delete()
+        await _show_pattern(query.message, context, 0)
+    except Exception as e:
+        logger.error("generate_patterns error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate patterns. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+
+    return ConversationHandler.END
+
+
+async def _show_pattern(message, context: ContextTypes.DEFAULT_TYPE, index: int) -> None:
+    patterns = context.user_data.get("pat_patterns", [])
+
+    if index >= len(patterns):
+        saved = context.user_data.pop("pat_saved", 0)
+        total = len(patterns)
+        context.user_data.pop("pat_patterns", None)
+        context.user_data.pop("pat_level", None)
+        await message.reply_text(
+            f"Done! Saved {saved}/{total} pattern(s).",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    p = patterns[index]
+    level = context.user_data.get("pat_level", "")
+
+    examples_text = "\n".join(
+        f"• <i>{ex['en']}</i>\n  {ex['uk']}"
+        for ex in p.get("examples", [])
+    )
+
+    text = (
+        f"<b>Pattern {index + 1}/{len(patterns)}</b>  [{level}]\n\n"
+        f"📌 <b>{p['name']}</b>\n"
+        f"🔧 <code>{p['structure']}</code>\n\n"
+        f"{examples_text}\n\n"
+        f"💡 {p['note']}"
+    )
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💾 Save", callback_data=f"pat_save:{index}"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"pat_skip:{index}"),
+    ]])
+    await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def cb_pat_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    index = int(query.data.split(":")[1])
+    patterns = context.user_data.get("pat_patterns", [])
+
+    if index < len(patterns):
+        p = patterns[index]
+        level = context.user_data.get("pat_level", "")
+        db.add_pattern(
+            update.effective_user.id,
+            p["name"],
+            p["structure"],
+            p.get("note", ""),
+            json.dumps(p.get("examples", []), ensure_ascii=False),
+            level,
+        )
+        context.user_data["pat_saved"] = context.user_data.get("pat_saved", 0) + 1
+        await query.answer("Saved!")
+    else:
+        await query.answer()
+
+    await query.edit_message_reply_markup(None)
+    await _show_pattern(query.message, context, index + 1)
+
+
+async def cb_pat_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    index = int(query.data.split(":")[1])
+    await query.edit_message_reply_markup(None)
+    await _show_pattern(query.message, context, index + 1)
+
+
+async def pat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("pat_patterns", "pat_saved", "pat_level"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Patterns cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -748,6 +869,17 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", gram_cancel)],
     )
 
+    pat_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("patterns", pat_start),
+            CallbackQueryHandler(pat_start, pattern="^menu:patterns$"),
+        ],
+        states={
+            PAT_LEVEL: [CallbackQueryHandler(pat_got_level, pattern=r"^pat_level:[ABC][12]$")],
+        },
+        fallbacks=[CommandHandler("cancel", pat_cancel)],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -757,6 +889,7 @@ def main() -> None:
     app.add_handler(gen_conv)
     app.add_handler(chat_conv)
     app.add_handler(gram_conv)
+    app.add_handler(pat_conv)
 
     app.add_handler(CallbackQueryHandler(cb_show_menu,  pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,    pattern="^menu:review$"))
@@ -767,6 +900,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_list_page,   pattern=r"^page:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_gen_save,    pattern=r"^gen_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_gen_skip,    pattern=r"^gen_skip:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_pat_save,    pattern=r"^pat_save:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_pat_skip,    pattern=r"^pat_skip:\d+$"))
 
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

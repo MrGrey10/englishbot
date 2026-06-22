@@ -43,6 +43,17 @@ def init_db() -> None:
                 next_review TEXT    DEFAULT (datetime('now')),
                 last_review TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS patterns (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL,
+                pattern_name TEXT    NOT NULL,
+                structure    TEXT,
+                note         TEXT,
+                examples     TEXT,
+                level        TEXT,
+                created_at   TEXT    DEFAULT (datetime('now'))
+            );
         """)
 
 
@@ -110,6 +121,15 @@ def count_phrases(user_id: int) -> int:
         return conn.execute(
             "SELECT COUNT(*) FROM phrases WHERE user_id = ?", (user_id,)
         ).fetchone()[0]
+
+
+def add_pattern(user_id: int, pattern_name: str, structure: str, note: str, examples: str, level: str) -> int:
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO patterns (user_id, pattern_name, structure, note, examples, level) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, pattern_name, structure, note, examples, level),
+        )
+        return cur.lastrowid
 
 
 def delete_phrase(phrase_id: int, user_id: int) -> bool:
