@@ -1,7 +1,10 @@
 import http.server
+import io
 import json
 import logging
 import os
+import random
+import re
 import threading
 
 from dotenv import load_dotenv
@@ -19,7 +22,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases
+from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases, text_to_speech, transcribe_audio
 from tutor_chat import tutor_reply
 
 load_dotenv()
@@ -34,7 +37,8 @@ PHRASE, TRANSLATION, EXAMPLE = range(3)
 GEN_LEVEL, GEN_TOPIC = range(2)
 CHAT_ACTIVE = 0
 GRAM_LEVEL, GRAM_ANSWER = range(2)
-PAT_LEVEL = 0
+PAT_MENU, PAT_LEVEL = range(2)
+DRILL_LEVEL, DRILL_ACTIVE = range(2)
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
@@ -50,16 +54,15 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🤖 Generate AI", callback_data="menu:generate"),
         ],
         [
-            InlineKeyboardButton("🔁 Review", callback_data="menu:review"),
-            InlineKeyboardButton("📋 List", callback_data="menu:list"),
-        ],
-        [
-            InlineKeyboardButton("📊 Stats", callback_data="menu:stats"),
-            InlineKeyboardButton("💬 Tutor Chat", callback_data="menu:chat"),
+            InlineKeyboardButton("📚 Phrases", callback_data="menu:phrases"),
+            InlineKeyboardButton("💬 Chatting", callback_data="menu:chat"),
         ],
         [
             InlineKeyboardButton("✍️ Grammar", callback_data="menu:grammar"),
             InlineKeyboardButton("🎯 Patterns", callback_data="menu:patterns"),
+        ],
+        [
+            InlineKeyboardButton("🔥 Drill", callback_data="menu:drill"),
         ],
     ])
 
@@ -478,8 +481,10 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return CHAT_ACTIVE
 
 
-async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_text = update.message.text.strip()
+async def _process_chat_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str
+) -> int:
+    message = update.message
     history = context.user_data.get("chat_history", [])
 
     await update.effective_chat.send_action(ChatAction.TYPING)
@@ -488,9 +493,7 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         reply = await tutor_reply(user_text, history)
     except Exception as e:
         logger.error("tutor_reply error: %s", e)
-        await update.message.reply_text(
-            "Something went wrong. Try again.", reply_markup=_CHAT_END_KB
-        )
+        await message.reply_text("Something went wrong. Try again.", reply_markup=_CHAT_END_KB)
         return CHAT_ACTIVE
 
     history.append({"role": "user", "content": user_text})
@@ -499,8 +502,37 @@ async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         history = history[-20:]
     context.user_data["chat_history"] = history
 
-    await update.message.reply_text(reply, reply_markup=_CHAT_END_KB)
+    await message.reply_text(reply, reply_markup=_CHAT_END_KB)
+
+    await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
+    try:
+        audio = await text_to_speech(reply)
+        await message.reply_voice(io.BytesIO(audio))
+    except Exception as e:
+        logger.error("TTS error: %s", e)
+
     return CHAT_ACTIVE
+
+
+async def chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _process_chat_message(update, context, update.message.text.strip())
+
+
+async def chat_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    tg_file = await update.message.voice.get_file()
+    audio_bytes = bytes(await tg_file.download_as_bytearray())
+
+    wait = await update.message.reply_text("🎧 Transcribing... ⏳")
+    try:
+        transcription = await transcribe_audio(audio_bytes)
+    except Exception as e:
+        logger.error("transcribe_audio error in chat: %s", e)
+        await wait.edit_text("Could not transcribe. Please type your message instead.")
+        return CHAT_ACTIVE
+
+    await wait.delete()
+    await update.message.reply_text(f"🎤 You said: <i>{transcription}</i>", parse_mode="HTML")
+    return await _process_chat_message(update, context, transcription)
 
 
 async def chat_end_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -648,12 +680,42 @@ async def pat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         msg = update.message
 
+    user_id = update.effective_user.id
+    count = db.count_patterns(user_id)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🆕 Generate New Patterns", callback_data="pat_menu:generate")],
+        [InlineKeyboardButton(f"📚 My Saved Patterns ({count})", callback_data="pat_menu:my")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")],
+    ])
+    await msg.reply_text("🎯 Grammar Patterns\n\nLearn grammar by feeling patterns, not memorizing rules.", reply_markup=keyboard)
+    return PAT_MENU
+
+
+async def cb_pat_menu_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(l, callback_data=f"pat_level:{l}") for l in ("A1", "A2", "B1")],
         [InlineKeyboardButton(l, callback_data=f"pat_level:{l}") for l in ("B2", "C1", "C2")],
     ])
-    await msg.reply_text("Choose your English level for grammar patterns:", reply_markup=keyboard)
+    await query.message.reply_text("Choose your English level:", reply_markup=keyboard)
     return PAT_LEVEL
+
+
+async def cb_pat_menu_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    rows = db.get_patterns(user_id)
+    if not rows:
+        await query.message.reply_text(
+            "No saved patterns yet. Generate some first!",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+    context.user_data["pat_browse"] = [dict(row) for row in rows]
+    await _show_browse_pattern(query.message, context, 0)
+    return ConversationHandler.END
 
 
 async def pat_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -750,10 +812,305 @@ async def cb_pat_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _show_pattern(query.message, context, index + 1)
 
 
+async def _show_browse_pattern(message, context: ContextTypes.DEFAULT_TYPE, index: int) -> None:
+    patterns = context.user_data.get("pat_browse", [])
+    if not patterns:
+        return
+
+    p = patterns[index]
+    examples = json.loads(p.get("examples") or "[]")
+    examples_text = "\n".join(
+        f"• <i>{ex['en']}</i>\n  {ex['uk']}"
+        for ex in examples
+    )
+    text = (
+        f"<b>Pattern {index + 1}/{len(patterns)}</b>  [{p.get('level', '')}]\n\n"
+        f"📌 <b>{p['pattern_name']}</b>\n"
+        f"🔧 <code>{p['structure']}</code>\n\n"
+        f"{examples_text}\n\n"
+        f"💡 {p.get('note', '')}"
+    )
+
+    nav = []
+    if index > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"pat_browse:{index - 1}"))
+    if index + 1 < len(patterns):
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"pat_browse:{index + 1}"))
+
+    rows = [nav] if nav else []
+    rows.append([InlineKeyboardButton("🏠 Done", callback_data="menu:home")])
+    await message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def cb_pat_browse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    index = int(query.data.split(":")[1])
+    await _show_browse_pattern(query.message, context, index)
+
+
 async def pat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    for key in ("pat_patterns", "pat_saved", "pat_level"):
+    for key in ("pat_patterns", "pat_saved", "pat_level", "pat_browse"):
         context.user_data.pop(key, None)
     await update.message.reply_text("Patterns cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+# ── Drill ─────────────────────────────────────────────────────────────────────
+
+def _normalize_answer(text: str) -> str:
+    return re.sub(r"[^\w\s]", "", text.strip().lower())
+
+
+def _build_saved_drill_items(user_id: int) -> list[dict]:
+    items = []
+
+    phrases = db.get_all_phrases(user_id, 0, 50)
+    if phrases:
+        sample = random.sample(list(phrases), min(6, len(phrases)))
+        mid = max(1, len(sample) // 2)
+        for p in sample[:mid]:
+            items.append({
+                "type": "voice",
+                "question": (
+                    f"🎤 <b>Say it in English!</b>\n\n"
+                    f"Listen to the Ukrainian and speak the English phrase:\n\n"
+                    f"<i>{p['translation']}</i>\n\n"
+                    f"Send a 🎙 voice message:"
+                ),
+                "answer": p["phrase"],
+                "hint": f"✏️ {p['phrase']}",
+            })
+        for p in sample[mid:]:
+            items.append({
+                "type": "phrase",
+                "question": f"📝 <b>Saved Phrase</b>\n\nTranslate to English:\n\n<i>{p['translation']}</i>",
+                "answer": p["phrase"],
+                "hint": f"✏️ {p['phrase']}",
+            })
+
+    patterns = db.get_patterns(user_id)
+    if patterns:
+        for p in random.sample(list(patterns), min(5, len(patterns))):
+            examples = json.loads(p.get("examples") or "[]")
+            if examples:
+                ex = random.choice(examples)
+                items.append({
+                    "type": "pattern",
+                    "question": (
+                        f"🎯 <b>Pattern: {p['pattern_name']}</b>\n"
+                        f"<code>{p['structure']}</code>\n\n"
+                        f"Translate to English:\n\n<i>{ex['uk']}</i>"
+                    ),
+                    "answer": ex["en"],
+                    "hint": f"✏️ {ex['en']}",
+                })
+
+    return items
+
+
+async def drill_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"drill_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"drill_level:{l}") for l in ("B2", "C1", "C2")],
+    ])
+    await msg.reply_text(
+        "🔥 <b>Drill</b>\n\n"
+        "Mixed exercises from your saved phrases, patterns, and AI grammar.\n\n"
+        "Choose a level for grammar exercises:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return DRILL_LEVEL
+
+
+async def drill_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    context.user_data["drill_level"] = level
+
+    user_id = update.effective_user.id
+    wait_msg = await query.message.reply_text("Building your drill session... ⏳")
+
+    items = _build_saved_drill_items(user_id)
+    try:
+        exercises = await generate_grammar_exercises(level, count=5)
+        for ex in exercises:
+            items.append({
+                "type": "grammar",
+                "question": (
+                    f"✍️ <b>Grammar [{level}]</b>\n\n"
+                    f"Fill in the blank:\n\n"
+                    f"<b>{ex['sentence']}</b>\n\n"
+                    f"Type the missing word:"
+                ),
+                "answer": ex["answer"],
+                "hint": f"✏️ {ex['full_sentence']}\n💡 {ex['hint']}",
+            })
+    except Exception as e:
+        logger.error("drill grammar generation error: %s", e)
+
+    if not items:
+        await wait_msg.edit_text(
+            "No drill content available. Add phrases or patterns first!",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    random.shuffle(items)
+    context.user_data["drill_queue"] = items
+    context.user_data["drill_index"] = 0
+    context.user_data["drill_score"] = 0
+    context.user_data["drill_streak"] = 0
+    context.user_data["drill_max_streak"] = 0
+    context.user_data["drill_correct"] = 0
+    context.user_data["drill_total"] = len(items)
+
+    await wait_msg.delete()
+    await _show_drill_question(query.message, context)
+    return DRILL_ACTIVE
+
+
+async def _show_drill_question(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    queue = context.user_data["drill_queue"]
+    index = context.user_data["drill_index"]
+    total = context.user_data["drill_total"]
+    score = context.user_data["drill_score"]
+    streak = context.user_data["drill_streak"]
+
+    if index >= len(queue):
+        await _show_drill_result(message, context)
+        return
+
+    item = queue[index]
+    streak_tag = f" · 🔥×{streak}" if streak >= 2 else ""
+    header = f"[{index + 1}/{total}] · 🏆 {score} pts{streak_tag}"
+
+    await message.reply_text(
+        f"<b>{header}</b>\n\n{item['question']}",
+        parse_mode="HTML",
+    )
+
+
+async def _process_drill_answer(
+    message, context: ContextTypes.DEFAULT_TYPE, user_answer: str, is_voice: bool = False
+) -> int:
+    queue = context.user_data.get("drill_queue", [])
+    index = context.user_data.get("drill_index", 0)
+
+    if index >= len(queue):
+        return ConversationHandler.END
+
+    item = queue[index]
+    is_correct = _normalize_answer(user_answer) == _normalize_answer(item["answer"])
+
+    if is_correct:
+        context.user_data["drill_score"] += 10
+        context.user_data["drill_streak"] += 1
+        context.user_data["drill_correct"] = context.user_data.get("drill_correct", 0) + 1
+        streak = context.user_data["drill_streak"]
+        if streak > context.user_data.get("drill_max_streak", 0):
+            context.user_data["drill_max_streak"] = streak
+        if streak % 3 == 0:
+            context.user_data["drill_score"] += 5
+            result_line = "✅ Correct! 🔥 Streak bonus +5 pts!"
+        else:
+            result_line = "✅ Correct!"
+    else:
+        context.user_data["drill_streak"] = 0
+        heard = f"\nI heard: <i>{user_answer}</i>" if is_voice else ""
+        result_line = f"❌ Wrong!{heard}"
+
+    context.user_data["drill_index"] = index + 1
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Next ➡️", callback_data="drill:next")]])
+    await message.reply_text(
+        f"{result_line}\n\n{item['hint']}",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return DRILL_ACTIVE
+
+
+async def drill_got_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _process_drill_answer(update.message, context, update.message.text.strip())
+
+
+async def drill_got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    voice = update.message.voice
+    tg_file = await voice.get_file()
+    audio_bytes = bytes(await tg_file.download_as_bytearray())
+
+    wait = await update.message.reply_text("🎧 Transcribing... ⏳")
+    try:
+        transcription = await transcribe_audio(audio_bytes)
+    except Exception as e:
+        logger.error("transcribe_audio error: %s", e)
+        await wait.edit_text("Could not transcribe audio. Please type your answer instead.")
+        return DRILL_ACTIVE
+
+    await wait.delete()
+    await update.message.reply_text(f"🎤 I heard: <i>{transcription}</i>", parse_mode="HTML")
+    return await _process_drill_answer(update.message, context, transcription, is_voice=True)
+
+
+async def drill_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    index = context.user_data.get("drill_index", 0)
+    total = context.user_data.get("drill_total", 0)
+
+    if index >= total:
+        await _show_drill_result(query.message, context)
+        return ConversationHandler.END
+
+    await _show_drill_question(query.message, context)
+    return DRILL_ACTIVE
+
+
+async def _show_drill_result(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    score = context.user_data.pop("drill_score", 0)
+    correct = context.user_data.pop("drill_correct", 0)
+    total = context.user_data.pop("drill_total", 0)
+    max_streak = context.user_data.pop("drill_max_streak", 0)
+    for key in ("drill_queue", "drill_index", "drill_streak", "drill_level"):
+        context.user_data.pop(key, None)
+
+    pct = (correct / total * 100) if total else 0
+    if pct >= 90:
+        grade = "🌟 Excellent!"
+    elif pct >= 70:
+        grade = "🔥 Great job!"
+    elif pct >= 50:
+        grade = "💪 Good effort!"
+    else:
+        grade = "📚 Keep practicing!"
+
+    await message.reply_text(
+        f"<b>Drill Complete!</b>\n\n"
+        f"{grade}\n\n"
+        f"✅ Correct: {correct}/{total}\n"
+        f"🏆 Score: {score} pts\n"
+        f"🔥 Best streak: {max_streak}",
+        parse_mode="HTML",
+        reply_markup=_back_to_menu_keyboard(),
+    )
+
+
+async def drill_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("drill_queue", "drill_index", "drill_score", "drill_streak",
+                "drill_max_streak", "drill_correct", "drill_total", "drill_level"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Drill cancelled.", reply_markup=_back_to_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -773,6 +1130,85 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Total phrases:  {s['total']}\n"
         f"Due for review: {s['due']}\n"
         f"Well-learned:   {s['learned']} (3+ successful reviews)",
+        reply_markup=_back_to_menu_keyboard(),
+    )
+
+
+# ── Phrases hub ──────────────────────────────────────────────────────────────
+
+async def cb_phrases_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    stats = db.get_stats(user_id)
+    pat_count = db.count_patterns(user_id)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"✍️ Grammar (0)",
+            callback_data="phrases:grammar",
+        )],
+        [InlineKeyboardButton(
+            f"🎯 Patterns ({pat_count})",
+            callback_data="phrases:patterns",
+        )],
+        [InlineKeyboardButton(
+            f"📝 Topic Phrases ({stats['total']})  ·  {stats['due']} due",
+            callback_data="phrases:topic",
+        )],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")],
+    ])
+    await query.message.reply_text("📚 All Saved Content", reply_markup=keyboard)
+
+
+async def cb_phrases_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    s = db.get_stats(user_id)
+    if s["total"] == 0:
+        await query.message.reply_text(
+            "No phrases yet. Use Add Phrase or Generate AI to start!",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    review_label = f"🔁 Review ({s['due']} due)" if s["due"] > 0 else "🔁 Review (none due)"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(review_label, callback_data="phrases:review")],
+        [InlineKeyboardButton("📋 Browse All", callback_data="phrases:browse")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="menu:phrases")],
+    ])
+    await query.message.reply_text(
+        f"📝 Topic Phrases\n\n"
+        f"Total: {s['total']}  ·  Due: {s['due']}  ·  Learned: {s['learned']}",
+        reply_markup=keyboard,
+    )
+
+
+async def cb_phrases_patterns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    rows = db.get_patterns(user_id)
+    if not rows:
+        await query.message.reply_text(
+            "No saved patterns yet. Generate some via 🎯 Patterns!",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+    context.user_data["pat_browse"] = [dict(row) for row in rows]
+    await _show_browse_pattern(query.message, context, 0)
+
+
+async def cb_phrases_grammar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "✍️ Grammar\n\nNo saved grammar exercises yet.\n\nPractise via ✍️ Grammar in the main menu — saving will be added soon.",
         reply_markup=_back_to_menu_keyboard(),
     )
 
@@ -847,6 +1283,7 @@ def main() -> None:
         ],
         states={
             CHAT_ACTIVE: [
+                MessageHandler(filters.VOICE, chat_voice_message),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, chat_message),
                 CallbackQueryHandler(chat_end_cb, pattern="^chat:end$"),
             ],
@@ -875,9 +1312,29 @@ def main() -> None:
             CallbackQueryHandler(pat_start, pattern="^menu:patterns$"),
         ],
         states={
+            PAT_MENU: [
+                CallbackQueryHandler(cb_pat_menu_generate, pattern="^pat_menu:generate$"),
+                CallbackQueryHandler(cb_pat_menu_my,       pattern="^pat_menu:my$"),
+            ],
             PAT_LEVEL: [CallbackQueryHandler(pat_got_level, pattern=r"^pat_level:[ABC][12]$")],
         },
         fallbacks=[CommandHandler("cancel", pat_cancel)],
+    )
+
+    drill_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("drill", drill_start),
+            CallbackQueryHandler(drill_start, pattern="^menu:drill$"),
+        ],
+        states={
+            DRILL_LEVEL: [CallbackQueryHandler(drill_got_level, pattern=r"^drill_level:[ABC][12]$")],
+            DRILL_ACTIVE: [
+                MessageHandler(filters.VOICE, drill_got_voice),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, drill_got_answer),
+                CallbackQueryHandler(drill_next, pattern="^drill:next$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", drill_cancel)],
     )
 
     app.add_handler(CommandHandler("start",  cmd_start))
@@ -890,11 +1347,18 @@ def main() -> None:
     app.add_handler(chat_conv)
     app.add_handler(gram_conv)
     app.add_handler(pat_conv)
+    app.add_handler(drill_conv)
 
-    app.add_handler(CallbackQueryHandler(cb_show_menu,  pattern="^menu:home$"))
-    app.add_handler(CallbackQueryHandler(cmd_review,    pattern="^menu:review$"))
-    app.add_handler(CallbackQueryHandler(cmd_list,      pattern="^menu:list$"))
-    app.add_handler(CallbackQueryHandler(cmd_stats,     pattern="^menu:stats$"))
+    app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
+    app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^menu:review$"))
+    app.add_handler(CallbackQueryHandler(cmd_list,           pattern="^menu:list$"))
+    app.add_handler(CallbackQueryHandler(cmd_stats,          pattern="^menu:stats$"))
+    app.add_handler(CallbackQueryHandler(cb_phrases_menu,    pattern="^menu:phrases$"))
+    app.add_handler(CallbackQueryHandler(cb_phrases_topic,   pattern="^phrases:topic$"))
+    app.add_handler(CallbackQueryHandler(cb_phrases_patterns, pattern="^phrases:patterns$"))
+    app.add_handler(CallbackQueryHandler(cb_phrases_grammar, pattern="^phrases:grammar$"))
+    app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^phrases:review$"))
+    app.add_handler(CallbackQueryHandler(cmd_list,           pattern="^phrases:browse$"))
     app.add_handler(CallbackQueryHandler(cb_show_answer, pattern=r"^show:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_rate,        pattern=r"^rate:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_list_page,   pattern=r"^page:\d+$"))
@@ -902,6 +1366,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_gen_skip,    pattern=r"^gen_skip:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_pat_save,    pattern=r"^pat_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_pat_skip,    pattern=r"^pat_skip:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_pat_browse,  pattern=r"^pat_browse:\d+$"))
 
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

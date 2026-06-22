@@ -1,7 +1,10 @@
+import asyncio
+import io
 import json
 import os
 
 from groq import AsyncGroq
+from gtts import gTTS
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -111,6 +114,28 @@ Return ONLY the JSON array. No markdown, no code fences, no explanation outside 
         text = text.rstrip("`").strip()
 
     return json.loads(text)
+
+
+def _tts_sync(text: str) -> bytes:
+    buf = io.BytesIO()
+    gTTS(text=text, lang="en", slow=False).write_to_fp(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+async def text_to_speech(text: str) -> bytes:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _tts_sync, text)
+
+
+async def transcribe_audio(audio_bytes: bytes, filename: str = "voice.ogg") -> str:
+    client = _get_client()
+    transcription = await client.audio.transcriptions.create(
+        file=(filename, audio_bytes),
+        model="whisper-large-v3-turbo",
+        language="en",
+    )
+    return transcription.text.strip()
 
 
 async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
