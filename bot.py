@@ -1,3 +1,4 @@
+import asyncio
 import http.server
 import io
 import json
@@ -942,7 +943,9 @@ async def drill_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     items = _build_saved_drill_items(user_id)
     try:
-        exercises = await generate_grammar_exercises(level, count=5)
+        exercises = await asyncio.wait_for(
+            generate_grammar_exercises(level, count=5), timeout=25
+        )
         for ex in exercises:
             items.append({
                 "type": "grammar",
@@ -955,6 +958,8 @@ async def drill_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "answer": ex["answer"],
                 "hint": f"✏️ {ex['full_sentence']}\n💡 {ex['hint']}",
             })
+    except asyncio.TimeoutError:
+        logger.warning("Grammar generation timed out; proceeding without grammar exercises")
     except Exception as e:
         logger.error("drill grammar generation error: %s", e)
 

@@ -123,6 +123,21 @@ def count_phrases(user_id: int) -> int:
         ).fetchone()[0]
 
 
+def get_patterns(user_id: int) -> list[sqlite3.Row]:
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT id, pattern_name, structure, note, examples, level FROM patterns WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+
+
+def count_patterns(user_id: int) -> int:
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM patterns WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
+
+
 def add_pattern(user_id: int, pattern_name: str, structure: str, note: str, examples: str, level: str) -> int:
     with get_db() as conn:
         cur = conn.execute(

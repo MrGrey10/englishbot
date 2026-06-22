@@ -18,7 +18,7 @@ def _get_client() -> AsyncGroq:
         key = os.getenv("GROQ_API_KEY")
         if not key:
             raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _client = AsyncGroq(api_key=key)
+        _client = AsyncGroq(api_key=key, timeout=20.0)
     return _client
 
 
