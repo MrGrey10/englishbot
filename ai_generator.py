@@ -138,6 +138,44 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "voice.ogg") -> s
     return transcription.text.strip()
 
 
+async def generate_reading_text(level: str) -> dict:
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+
+    prompt = f"""Write a short English reading passage for level {level} ({level_desc}).
+
+Rules:
+- Length: 80–120 words for A1/A2, 120–180 words for B1/B2, 180–250 words for C1/C2
+- Natural, engaging content — a story snippet, opinion piece, or interesting fact
+- Vocabulary and grammar strictly appropriate for {level}
+- Pick 5 words or phrases from the text that are useful to learn at this level
+
+Return a JSON object with these keys:
+- "title": short title for the passage (5 words or fewer)
+- "text": the reading passage
+- "vocabulary": array of exactly 5 objects, each with:
+    - "word": the word or short phrase from the text
+    - "meaning": brief Ukrainian translation or explanation
+- "translation": full natural Ukrainian translation of the passage
+
+Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
 async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
     level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
 

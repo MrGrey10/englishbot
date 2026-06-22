@@ -23,7 +23,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases, text_to_speech, transcribe_audio
+from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases, generate_reading_text, text_to_speech, transcribe_audio
 from tutor_chat import tutor_reply
 
 load_dotenv()
@@ -40,6 +40,7 @@ CHAT_ACTIVE = 0
 GRAM_LEVEL, GRAM_ANSWER = range(2)
 PAT_MENU, PAT_LEVEL = range(2)
 DRILL_LEVEL, DRILL_ACTIVE = range(2)
+READ_LEVEL = 0
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
@@ -64,6 +65,7 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🔥 Drill", callback_data="menu:drill"),
+            InlineKeyboardButton("📖 Reading", callback_data="menu:reading"),
         ],
     ])
 
@@ -339,8 +341,8 @@ async def gen_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["gen_level"] = level
 
     rows = [
-        [InlineKeyboardButton(t, callback_data=f"topic:{t}") for t in _GEN_TOPICS[:4]],
-        [InlineKeyboardButton(t, callback_data=f"topic:{t}") for t in _GEN_TOPICS[4:]],
+        [InlineKeyboardButton(t, callback_data=f"topic:{t}") for t in pair]
+        for pair in [_GEN_TOPICS[i:i+2] for i in range(0, len(_GEN_TOPICS), 2)]
     ]
     await query.edit_message_text(
         f"Level: <b>{level}</b>\n\nChoose a topic or type your own:",
@@ -1119,6 +1121,64 @@ async def drill_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+# ── Reading ───────────────────────────────────────────────────────────────────
+
+async def read_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"read_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"read_level:{l}") for l in ("B2", "C1", "C2")],
+    ])
+    await msg.reply_text("📖 Reading\n\nChoose your English level:", reply_markup=keyboard)
+    return READ_LEVEL
+
+
+async def read_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    wait_msg = await query.message.reply_text("Generating reading text... ⏳")
+
+    try:
+        result = await generate_reading_text(level)
+    except Exception as e:
+        logger.error("generate_reading_text error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate text. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    vocab_lines = "\n".join(
+        f"• <b>{v['word']}</b> — {v['meaning']}"
+        for v in result.get("vocabulary", [])
+    )
+
+    text = (
+        f"📖 <b>{result['title']}</b>  [{level}]\n\n"
+        f"{result['text']}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📚 <b>Vocabulary</b>\n{vocab_lines}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🇺🇦 <i>{result['translation']}</i>"
+    )
+
+    await wait_msg.delete()
+    await query.message.reply_text(text, parse_mode="HTML", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def read_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Reading cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1342,6 +1402,17 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", drill_cancel)],
     )
 
+    read_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("reading", read_start),
+            CallbackQueryHandler(read_start, pattern="^menu:reading$"),
+        ],
+        states={
+            READ_LEVEL: [CallbackQueryHandler(read_got_level, pattern=r"^read_level:[ABC][12]$")],
+        },
+        fallbacks=[CommandHandler("cancel", read_cancel)],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -1353,6 +1424,7 @@ def main() -> None:
     app.add_handler(gram_conv)
     app.add_handler(pat_conv)
     app.add_handler(drill_conv)
+    app.add_handler(read_conv)
 
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^menu:review$"))
