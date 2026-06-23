@@ -23,8 +23,8 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, score_speak_answer, text_to_speech, transcribe_audio
-from tutor_chat import tutor_reply
+from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, score_speak_answer, text_to_speech, transcribe_audio
+from tutor_chat import tutor_open, tutor_reply
 
 load_dotenv()
 
@@ -42,10 +42,29 @@ PAT_MENU, PAT_LEVEL = range(2)
 DRILL_LEVEL, DRILL_ACTIVE = range(2)
 READ_LEVEL = 0
 SPEAK_LEVEL, SPEAK_ACTIVE = range(2)
+REPEAT_ACTIVE = 0
+TENSE_SELECT = 0
+LESSON_LEVEL = 0
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
 _GEN_TOPICS = ["Small talk", "Work", "IT Interview", "Travel", "Food & drink", "Relationships", "Sports", "Slang", "Any"]
+
+_TENSES = [
+    "Present Simple",
+    "Present Continuous",
+    "Present Perfect",
+    "Present Perfect Continuous",
+    "Past Simple",
+    "Past Continuous",
+    "Past Perfect",
+    "Future Simple",
+    "Future Continuous",
+    "Future Perfect",
+    "Going to Future",
+    "Second Conditional",
+    "Third Conditional",
+]
 
 
 # ── Utility ──────────────────────────────────────────────────────────────────
@@ -70,6 +89,11 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🗣 Speak", callback_data="menu:speak"),
+            InlineKeyboardButton("🔄 Repeat", callback_data="menu:repeat"),
+        ],
+        [
+            InlineKeyboardButton("🕐 Tense", callback_data="menu:tense"),
+            InlineKeyboardButton("🎓 Lesson", callback_data="menu:lesson"),
         ],
     ])
 
@@ -483,13 +507,37 @@ async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         msg = update.message
 
     context.user_data["chat_history"] = []
+
+    wait_msg = await msg.reply_text("💬 Picking a topic... ⏳")
+    try:
+        topic, opening = await tutor_open()
+    except Exception as e:
+        logger.error("tutor_open error: %s", e)
+        await wait_msg.delete()
+        await msg.reply_text(
+            "👋 Hey! I'm your English tutor. What would you like to talk about today?\n\n"
+            "Tap <b>End Chat</b> or send /cancel to go back.",
+            parse_mode="HTML",
+            reply_markup=_CHAT_END_KB,
+        )
+        return CHAT_ACTIVE
+
+    context.user_data["chat_history"].append({"role": "assistant", "content": opening})
+
+    await wait_msg.delete()
     await msg.reply_text(
-        "👋 Hey! I'm your English tutor.\n\n"
-        "Just chat with me in English — I'll correct any grammar mistakes and keep the conversation going.\n\n"
-        "Tap <b>End Chat</b> or send /cancel to go back.",
+        f"💬 Topic: <b>{topic.title()}</b>\n\n{opening}",
         parse_mode="HTML",
         reply_markup=_CHAT_END_KB,
     )
+
+    await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
+    try:
+        audio = await text_to_speech(opening)
+        await msg.reply_voice(io.BytesIO(audio))
+    except Exception as e:
+        logger.error("TTS error in chat_start: %s", e)
+
     return CHAT_ACTIVE
 
 
@@ -1493,6 +1541,473 @@ async def speak_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+# ── Tense Lesson ─────────────────────────────────────────────────────────────
+
+async def tense_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    rows = [
+        [InlineKeyboardButton(t, callback_data=f"tense:{t}") for t in _TENSES[i:i+2]]
+        for i in range(0, len(_TENSES), 2)
+    ]
+    rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu:home")])
+    await msg.reply_text(
+        "🕐 <b>Tense Lesson</b>\n\nChoose a tense to learn:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+    return TENSE_SELECT
+
+
+async def tense_got_tense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    tense = query.data.split(":", 1)[1]
+    wait_msg = await query.message.reply_text(
+        f"Generating lesson for <b>{tense}</b>... ⏳", parse_mode="HTML"
+    )
+
+    try:
+        result = await generate_tense_lesson(tense)
+    except Exception as e:
+        logger.error("generate_tense_lesson error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate lesson. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    signal_words = " · ".join(result.get("signal_words", []))
+    phrases_text = "\n\n".join(
+        f"• <i>{p['en']}</i>\n  🇺🇦 {p['uk']}\n  💡 {p.get('note', '')}"
+        for p in result.get("phrases", [])
+    )
+
+    text = (
+        f"🕐 <b>{result.get('tense', tense)}</b>\n\n"
+        f"📐 <b>Formation</b>\n{result.get('formation', '')}\n\n"
+        f"✅ <b>When to use</b>\n{result.get('when_to_use', '')}\n\n"
+        f"⏰ <b>Signal words:</b> {signal_words}\n\n"
+        f"💬 <b>Common phrases</b>\n\n{phrases_text}"
+    )
+
+    await wait_msg.delete()
+    await query.message.reply_text(text, parse_mode="HTML", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def tense_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Tense lesson cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+# ── Grammar Lesson ────────────────────────────────────────────────────────────
+
+async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"lesson_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"lesson_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+    ])
+    await msg.reply_text(
+        "🎓 <b>Grammar Lesson</b>\n\n"
+        "I'll pick a grammar rule for your level and give you a full lesson — "
+        "explanation, examples, common mistakes, and a quick check.\n\n"
+        "Every lesson is different. Choose your level:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return LESSON_LEVEL
+
+
+async def lesson_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    wait_msg = await query.message.reply_text(
+        f"Generating lesson for level <b>{level}</b>... ⏳", parse_mode="HTML"
+    )
+
+    try:
+        result = await generate_grammar_lesson(level)
+    except Exception as e:
+        logger.error("generate_grammar_lesson error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate lesson. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    examples_text = "\n\n".join(
+        f"• <i>{ex['en']}</i>\n  🇺🇦 {ex['uk']}\n  💡 {ex.get('note', '')}"
+        for ex in result.get("examples", [])
+    )
+
+    checks = result.get("quick_check", [])
+    context.user_data["lesson_checks"] = checks
+    context.user_data["lesson_check_index"] = 0
+    context.user_data["lesson_check_score"] = 0
+
+    mistake = result.get("common_mistake", "")
+
+    text = (
+        f"🎓 <b>{result.get('topic', '')} [{level}]</b>\n\n"
+        f"<i>{result.get('tagline', '')}</i>\n\n"
+        f"📝 <b>What it is</b>\n{result.get('explanation', '')}\n\n"
+        f"🔧 <b>Structure</b>\n<code>{result.get('structure', '')}</code>\n\n"
+        f"⚠️ <b>Common mistake</b>\n{mistake}\n\n"
+        f"💬 <b>Examples</b>\n\n{examples_text}"
+    )
+
+    await wait_msg.delete()
+    await query.message.reply_text(text, parse_mode="HTML")
+
+    if checks:
+        await _show_lesson_check(query.message, context)
+        return LESSON_LEVEL
+
+    await query.message.reply_text("Lesson complete! 🎉", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def _show_lesson_check(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    checks = context.user_data.get("lesson_checks", [])
+    index = context.user_data.get("lesson_check_index", 0)
+    score = context.user_data.get("lesson_check_score", 0)
+
+    if index >= len(checks):
+        total = len(checks)
+        context.user_data.pop("lesson_checks", None)
+        context.user_data.pop("lesson_check_index", None)
+        context.user_data.pop("lesson_check_score", None)
+        await message.reply_text(
+            f"🧪 <b>Quick check complete!</b>  {score}/{total} correct 🎉",
+            parse_mode="HTML",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    q = checks[index]
+    await message.reply_text(
+        f"🧪 <b>Quick check {index + 1}/{len(checks)}</b>\n\n"
+        f"Fill in the blank:\n\n"
+        f"<b>{q['sentence']}</b>\n\n"
+        f"Type the missing word:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+    )
+
+
+async def lesson_check_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    checks = context.user_data.get("lesson_checks")
+    if not checks:
+        return ConversationHandler.END
+
+    user_answer = update.message.text.strip().lower()
+    index = context.user_data.get("lesson_check_index", 0)
+
+    if index >= len(checks):
+        return ConversationHandler.END
+
+    q = checks[index]
+    correct = q["answer"].strip().lower()
+    is_correct = user_answer == correct
+
+    if is_correct:
+        context.user_data["lesson_check_score"] = context.user_data.get("lesson_check_score", 0) + 1
+        result_line = "✅ Correct!"
+    else:
+        result_line = f"❌ Wrong. The answer is: <b>{q['answer']}</b>"
+
+    context.user_data["lesson_check_index"] = index + 1
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Next ➡️", callback_data="lesson:next_check"),
+        InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+    ]])
+    await update.message.reply_text(
+        f"{result_line}\n\n💡 {q.get('explanation', '')}",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return LESSON_LEVEL
+
+
+async def lesson_next_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    checks = context.user_data.get("lesson_checks", [])
+    index = context.user_data.get("lesson_check_index", 0)
+
+    if index >= len(checks):
+        await _show_lesson_check(query.message, context)
+        return ConversationHandler.END
+
+    await _show_lesson_check(query.message, context)
+    return LESSON_LEVEL
+
+
+async def lesson_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("lesson_checks", "lesson_check_index", "lesson_check_score"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Lesson cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+# ── Repeat ───────────────────────────────────────────────────────────────────
+
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+    "it", "its", "i", "you", "he", "she", "we", "they", "do", "does",
+    "did", "have", "has", "had", "will", "would", "can", "could", "may",
+    "might", "shall", "should", "must", "and", "or", "but", "not", "no",
+    "so", "if", "that", "this", "these", "those",
+}
+
+
+def _make_fill_question(phrase: str, translation: str) -> tuple[str, str]:
+    words = phrase.split()
+    candidates = [
+        i for i, w in enumerate(words)
+        if re.sub(r"[^\w]", "", w).lower() not in _STOPWORDS
+        and len(re.sub(r"[^\w]", "", w)) > 2
+    ]
+    if not candidates:
+        candidates = list(range(len(words)))
+    idx = random.choice(candidates)
+    clean_word = re.sub(r"[^\w]", "", words[idx]).lower()
+    blanked = words[:]
+    blanked[idx] = "___"
+    question = (
+        f"🔤 <b>Fill in the blank!</b>\n\n"
+        f"<b>{' '.join(blanked)}</b>\n\n"
+        f"🇺🇦 <i>{translation}</i>\n\n"
+        f"Type the missing word:"
+    )
+    return question, clean_word
+
+
+def _build_repeat_tasks(phrases: list) -> list:
+    tasks = []
+    for p in phrases:
+        phrase_id = p["id"]
+        phrase = p["phrase"]
+        translation = p["translation"]
+        tasks.append({
+            "phrase_id": phrase_id,
+            "type": "write",
+            "question": (
+                f"✍️ <b>Write it!</b>\n\n"
+                f"🇺🇦 <i>{translation}</i>\n\n"
+                f"Type the English phrase:"
+            ),
+            "answer": phrase,
+        })
+        tasks.append({
+            "phrase_id": phrase_id,
+            "type": "speak",
+            "question": (
+                f"🎤 <b>Say it!</b>\n\n"
+                f"🇺🇦 <i>{translation}</i>\n\n"
+                f"Send a 🎙 voice message with the English phrase:"
+            ),
+            "answer": phrase,
+        })
+        fill_q, fill_answer = _make_fill_question(phrase, translation)
+        tasks.append({
+            "phrase_id": phrase_id,
+            "type": "fill",
+            "question": fill_q,
+            "answer": fill_answer,
+        })
+    return tasks
+
+
+async def repeat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    user_id = update.effective_user.id
+    phrases = db.get_all_phrases(user_id, 0, 50)
+    if not phrases:
+        await msg.reply_text(
+            "No saved phrases yet! Add some phrases first.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    sample = random.sample(list(phrases), min(5, len(phrases)))
+    tasks = _build_repeat_tasks(sample)
+
+    context.user_data["repeat_tasks"] = tasks
+    context.user_data["repeat_index"] = 0
+    context.user_data["repeat_phrase_errors"] = {}
+    context.user_data["repeat_phrase_count"] = len(sample)
+
+    await _show_repeat_task(msg, context)
+    return REPEAT_ACTIVE
+
+
+async def _show_repeat_task(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    tasks = context.user_data["repeat_tasks"]
+    index = context.user_data["repeat_index"]
+    total_phrases = context.user_data["repeat_phrase_count"]
+
+    if index >= len(tasks):
+        await _show_repeat_result(message, context)
+        return
+
+    task = tasks[index]
+    phrase_num = index // 3 + 1
+    step_num = index % 3 + 1
+
+    await message.reply_text(
+        f"<b>Phrase {phrase_num}/{total_phrases} · Step {step_num}/3</b>\n\n{task['question']}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+    )
+
+
+async def repeat_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    tasks = context.user_data.get("repeat_tasks", [])
+    index = context.user_data.get("repeat_index", 0)
+    if index >= len(tasks):
+        return ConversationHandler.END
+
+    task = tasks[index]
+    if task["type"] == "speak":
+        await update.message.reply_text(
+            "🎙 Please send a voice message for this step.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+        )
+        return REPEAT_ACTIVE
+
+    return await _check_repeat_answer(update.message, context, update.message.text.strip())
+
+
+async def repeat_got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    tasks = context.user_data.get("repeat_tasks", [])
+    index = context.user_data.get("repeat_index", 0)
+    if index >= len(tasks):
+        return ConversationHandler.END
+
+    task = tasks[index]
+    if task["type"] != "speak":
+        await update.message.reply_text(
+            "✍️ Please type your answer for this step.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+        )
+        return REPEAT_ACTIVE
+
+    tg_file = await update.message.voice.get_file()
+    audio_bytes = bytes(await tg_file.download_as_bytearray())
+
+    wait = await update.message.reply_text("🎧 Transcribing... ⏳")
+    try:
+        transcription = await transcribe_audio(audio_bytes)
+    except Exception as e:
+        logger.error("transcribe_audio error in repeat: %s", e)
+        await wait.edit_text("Could not transcribe. Please try again.")
+        return REPEAT_ACTIVE
+
+    await wait.delete()
+    await update.message.reply_text(f"🎤 I heard: <i>{transcription}</i>", parse_mode="HTML")
+    return await _check_repeat_answer(update.message, context, transcription)
+
+
+async def _check_repeat_answer(
+    message, context: ContextTypes.DEFAULT_TYPE, user_answer: str
+) -> int:
+    tasks = context.user_data["repeat_tasks"]
+    index = context.user_data["repeat_index"]
+    phrase_errors = context.user_data["repeat_phrase_errors"]
+
+    task = tasks[index]
+    phrase_id = task["phrase_id"]
+    is_correct = _normalize_answer(user_answer) == _normalize_answer(task["answer"])
+
+    if not is_correct and phrase_id not in phrase_errors:
+        phrase_errors[phrase_id] = True
+
+    context.user_data["repeat_index"] = index + 1
+    is_last = context.user_data["repeat_index"] >= len(tasks)
+
+    result_line = "✅ Correct!" if is_correct else f"❌ Wrong! The answer: <b>{task['answer']}</b>"
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="repeat:next"),
+        InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+    ]])
+    await message.reply_text(result_line, parse_mode="HTML", reply_markup=keyboard)
+    return REPEAT_ACTIVE
+
+
+async def repeat_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    index = context.user_data.get("repeat_index", 0)
+    total = len(context.user_data.get("repeat_tasks", []))
+
+    if index >= total:
+        await _show_repeat_result(query.message, context)
+        return ConversationHandler.END
+
+    await _show_repeat_task(query.message, context)
+    return REPEAT_ACTIVE
+
+
+async def _show_repeat_result(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    phrase_count = context.user_data.pop("repeat_phrase_count", 0)
+    phrase_errors = context.user_data.pop("repeat_phrase_errors", {})
+    context.user_data.pop("repeat_tasks", None)
+    context.user_data.pop("repeat_index", None)
+
+    passed = phrase_count - len(phrase_errors)
+
+    if passed == phrase_count:
+        grade = "🌟 Perfect! All phrases mastered!"
+    elif passed >= phrase_count * 0.7:
+        grade = "🔥 Great job!"
+    elif passed >= phrase_count * 0.5:
+        grade = "💪 Good effort!"
+    else:
+        grade = "📚 Keep practicing!"
+
+    await message.reply_text(
+        f"<b>Repeat Session Complete!</b>\n\n"
+        f"{grade}\n\n"
+        f"✅ Phrases fully passed: {passed}/{phrase_count}\n\n"
+        f"<i>A phrase passes only when all 3 steps are correct.</i>",
+        parse_mode="HTML",
+        reply_markup=_back_to_menu_keyboard(),
+    )
+
+
+async def repeat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("repeat_tasks", "repeat_index", "repeat_phrase_errors", "repeat_phrase_count"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Repeat session cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Health check server (required by Render Web Service) ─────────────────────
 
 def _start_health_server() -> None:
@@ -1667,6 +2182,56 @@ def main() -> None:
         ],
     )
 
+    repeat_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("repeat", repeat_start),
+            CallbackQueryHandler(repeat_start, pattern="^menu:repeat$"),
+        ],
+        states={
+            REPEAT_ACTIVE: [
+                MessageHandler(filters.VOICE, repeat_got_voice),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, repeat_got_text),
+                CallbackQueryHandler(repeat_next, pattern="^repeat:next$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", repeat_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
+    tense_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("tense", tense_start),
+            CallbackQueryHandler(tense_start, pattern="^menu:tense$"),
+        ],
+        states={
+            TENSE_SELECT: [CallbackQueryHandler(tense_got_tense, pattern=r"^tense:.+$")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", tense_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
+    lesson_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("lesson", lesson_start),
+            CallbackQueryHandler(lesson_start, pattern="^menu:lesson$"),
+        ],
+        states={
+            LESSON_LEVEL: [
+                CallbackQueryHandler(lesson_got_level, pattern=r"^lesson_level:[ABC][12]$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, lesson_check_answer),
+                CallbackQueryHandler(lesson_next_check, pattern="^lesson:next_check$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", lesson_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -1680,6 +2245,9 @@ def main() -> None:
     app.add_handler(drill_conv)
     app.add_handler(read_conv)
     app.add_handler(speak_conv)
+    app.add_handler(repeat_conv)
+    app.add_handler(tense_conv)
+    app.add_handler(lesson_conv)
 
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^menu:review$"))

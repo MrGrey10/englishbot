@@ -244,6 +244,82 @@ Return ONLY the JSON object. No markdown, no code fences, no explanation outside
     return json.loads(text)
 
 
+async def generate_tense_lesson(tense: str) -> dict:
+    prompt = f"""You are an expert English teacher. Create a clear, practical lesson on the English tense: "{tense}".
+
+Return a JSON object with these keys:
+- "tense": the tense name
+- "formation": 1-2 sentences showing how to form this tense (subject + verb structure) with a short example
+- "when_to_use": 2-3 sentences explaining when native speakers actually use this tense in real life
+- "signal_words": array of 4-5 common signal words or time expressions used with this tense (e.g. "already", "since", "for")
+- "phrases": array of exactly 6 objects, each with:
+    - "en": a natural everyday English sentence using this tense (avoid textbook clichés)
+    - "uk": natural Ukrainian translation
+    - "note": one short note about why this tense is used here (max 10 words)
+
+Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=2500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
+async def generate_grammar_lesson(level: str) -> dict:
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+
+    prompt = f"""You are an expert English teacher creating a grammar lesson for a Ukrainian learner at level {level} ({level_desc}).
+
+Pick ONE grammar topic that is most useful and appropriate for {level}. Examples of topics (choose freely, pick the most helpful one for this level, vary it each call):
+Articles (a/an/the), Prepositions of time, Prepositions of place, Modal verbs, Passive voice, Gerunds vs Infinitives, Relative clauses, Reported speech, Conditionals, Phrasal verbs (common), Comparatives & Superlatives, Question tags, Quantifiers (some/any/much/many), Word order in questions, Verb patterns (verb + ing / verb + to), Subject-verb agreement.
+
+Generate a complete, expanded lesson on your chosen topic for level {level}.
+
+Return a JSON object with these keys:
+- "topic": the grammar rule name (e.g. "Passive Voice", "Articles")
+- "tagline": one sentence saying what this rule helps you do in English
+- "explanation": 3–4 sentences explaining what the rule is and WHY it exists (simple, clear, practical)
+- "structure": how to form it — 1-3 lines showing the pattern, e.g. "Subject + is/are + past participle"
+- "common_mistake": the single most common error Ukrainian speakers make with this rule (1-2 sentences), with a wrong example and the correct version
+- "examples": array of exactly 6 objects, each with:
+    - "en": a natural, everyday English sentence using this rule (avoid clichés)
+    - "uk": natural Ukrainian translation
+    - "note": one short note (max 10 words) on WHY this rule applies here
+- "quick_check": array of exactly 3 fill-in-the-blank objects, each with:
+    - "sentence": sentence with ___ for the missing word/phrase
+    - "answer": the correct answer (lowercase, as a learner would type it)
+    - "explanation": one sentence saying why that answer is correct
+
+Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=3500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
 async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
     level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
 

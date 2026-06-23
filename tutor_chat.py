@@ -1,4 +1,5 @@
 import os
+import random
 
 from groq import AsyncGroq
 from dotenv import load_dotenv
@@ -7,7 +8,27 @@ load_dotenv()
 
 _client: AsyncGroq | None = None
 
-SYSTEM_PROMPT = """You are a friendly English teacher and conversation partner. For every user message:
+_OPEN_TOPICS = [
+    "daily routines",
+    "travel experiences",
+    "food and cooking",
+    "movies and TV shows",
+    "technology and gadgets",
+    "hobbies and free time",
+    "work and career goals",
+    "learning English",
+    "sports and fitness",
+    "favourite places",
+    "weekend plans",
+    "childhood memories",
+    "music and concerts",
+    "books and reading",
+    "dreams and future plans",
+]
+
+SYSTEM_PROMPT = """You are a friendly English teacher and conversation partner. YOU lead the conversation — you pick topics and always end every reply with a question to keep the student talking.
+
+For every user message:
 
 1. GRAMMAR CHECK — scan the message for mistakes (spelling, grammar, word choice, punctuation).
    - If mistakes exist, begin your reply with:
@@ -15,7 +36,7 @@ SYSTEM_PROMPT = """You are a friendly English teacher and conversation partner. 
    - If there are multiple mistakes, list each on its own ✏️ line.
    - If the message is correct, skip this block entirely — do NOT say "no mistakes" or anything about grammar.
 
-2. RESPONSE — reply naturally to what they said. Be warm, engaging, and curious. Ask a follow-up question to keep the conversation going.
+2. RESPONSE — reply naturally to what they said. Be warm, engaging, and curious. Always end with a follow-up question to drive the conversation forward.
 
 Keep responses concise: corrections (if any) + 2–3 sentences of reply + one question.
 Write in clear, friendly English. Never make the user feel bad about mistakes."""
@@ -29,6 +50,24 @@ def _get_client() -> AsyncGroq:
             raise RuntimeError("GROQ_API_KEY is not set in .env")
         _client = AsyncGroq(api_key=key)
     return _client
+
+
+async def tutor_open(topic: str | None = None) -> tuple[str, str]:
+    if topic is None:
+        topic = random.choice(_OPEN_TOPICS)
+
+    prompt = (
+        f'You are starting an English conversation practice session. '
+        f'The topic is "{topic}". Write a short, warm opener: 1–2 sentences introducing the topic, '
+        f'then ask the student one simple, open-ended question about it. '
+        f'Keep it natural and encouraging. Write in clear, friendly English.'
+    )
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=150,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return topic, response.choices[0].message.content.strip()
 
 
 async def tutor_reply(user_message: str, history: list[dict]) -> str:
