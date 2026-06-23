@@ -23,7 +23,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases, generate_reading_text, text_to_speech, transcribe_audio
+from ai_generator import generate_grammar_exercises, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, score_speak_answer, text_to_speech, transcribe_audio
 from tutor_chat import tutor_reply
 
 load_dotenv()
@@ -41,6 +41,7 @@ GRAM_LEVEL, GRAM_ANSWER = range(2)
 PAT_MENU, PAT_LEVEL = range(2)
 DRILL_LEVEL, DRILL_ACTIVE = range(2)
 READ_LEVEL = 0
+SPEAK_LEVEL, SPEAK_ACTIVE = range(2)
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
@@ -66,6 +67,9 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("🔥 Drill", callback_data="menu:drill"),
             InlineKeyboardButton("📖 Reading", callback_data="menu:reading"),
+        ],
+        [
+            InlineKeyboardButton("🗣 Speak", callback_data="menu:speak"),
         ],
     ])
 
@@ -1296,6 +1300,199 @@ async def cb_phrases_grammar(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+# ── Speak ─────────────────────────────────────────────────────────────────────
+
+async def speak_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"speak_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"speak_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+    ])
+    await msg.reply_text(
+        "🗣 <b>Speak</b>\n\n"
+        "I'll show you a Ukrainian sentence — record a 🎙 voice message with the English translation.\n"
+        "I'll transcribe, score, and correct each attempt.\n\n"
+        "Choose your level:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return SPEAK_LEVEL
+
+
+async def speak_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    context.user_data["speak_level"] = level
+
+    wait_msg = await query.message.reply_text("Generating sentences... ⏳")
+    try:
+        sentences = await generate_speak_sentences(level)
+        context.user_data["speak_sentences"] = sentences
+        context.user_data["speak_index"] = 0
+        context.user_data["speak_scores"] = []
+        context.user_data["speak_total"] = len(sentences)
+        await wait_msg.delete()
+        await _show_speak_sentence(query.message, context)
+    except Exception as e:
+        logger.error("generate_speak_sentences error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate sentences. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    return SPEAK_ACTIVE
+
+
+async def _show_speak_sentence(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sentences = context.user_data["speak_sentences"]
+    index = context.user_data["speak_index"]
+    total = context.user_data["speak_total"]
+    scores = context.user_data["speak_scores"]
+
+    if index >= len(sentences):
+        await _show_speak_result(message, context)
+        return
+
+    item = sentences[index]
+    done = len(scores)
+    score_tag = f"  🏆 {sum(scores)}/{done * 10}" if done > 0 else ""
+
+    await message.reply_text(
+        f"<b>[{index + 1}/{total}]{score_tag}</b>\n\n"
+        f"🇺🇦 <b>{item['uk']}</b>\n\n"
+        "Record a 🎙 voice message with the English translation:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+    )
+
+
+async def speak_got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    sentences = context.user_data.get("speak_sentences", [])
+    index = context.user_data.get("speak_index", 0)
+
+    if index >= len(sentences):
+        return ConversationHandler.END
+
+    tg_file = await update.message.voice.get_file()
+    audio_bytes = bytes(await tg_file.download_as_bytearray())
+
+    wait = await update.message.reply_text("🎧 Transcribing... ⏳")
+    try:
+        transcription = await transcribe_audio(audio_bytes)
+    except Exception as e:
+        logger.error("transcribe_audio error in speak: %s", e)
+        await wait.edit_text("Could not transcribe. Try recording again.")
+        return SPEAK_ACTIVE
+
+    await wait.delete()
+
+    item = sentences[index]
+    score_msg = await update.message.reply_text("🤔 Scoring... ⏳")
+    try:
+        result = await score_speak_answer(item["en"], transcription)
+    except Exception as e:
+        logger.error("score_speak_answer error: %s", e)
+        context.user_data["speak_scores"].append(0)
+        context.user_data["speak_index"] = index + 1
+        is_last = context.user_data["speak_index"] >= context.user_data["speak_total"]
+        await score_msg.edit_text(
+            f"🎤 You said: <i>{transcription}</i>\n\nCould not score this one.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="speak:next"),
+                InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+            ]]),
+        )
+        return SPEAK_ACTIVE
+
+    score = max(0, min(10, int(result.get("score", 0))))
+    context.user_data["speak_scores"].append(score)
+    context.user_data["speak_index"] = index + 1
+    is_last = context.user_data["speak_index"] >= context.user_data["speak_total"]
+
+    stars = "⭐" * score + "☆" * (10 - score)
+
+    await score_msg.edit_text(
+        f"🎤 You said: <i>{transcription}</i>\n\n"
+        f"Score: <b>{score}/10</b>  {stars}\n\n"
+        f"💡 {result.get('feedback', '')}\n\n"
+        f"✅ <b>{result.get('corrected', item['en'])}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="speak:next"),
+            InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+        ]]),
+    )
+    return SPEAK_ACTIVE
+
+
+async def speak_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    index = context.user_data.get("speak_index", 0)
+    total = context.user_data.get("speak_total", 0)
+
+    if index >= total:
+        await _show_speak_result(query.message, context)
+        return ConversationHandler.END
+
+    await _show_speak_sentence(query.message, context)
+    return SPEAK_ACTIVE
+
+
+async def _show_speak_result(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    scores = context.user_data.pop("speak_scores", [])
+    total = context.user_data.pop("speak_total", 0)
+    level = context.user_data.pop("speak_level", "")
+    context.user_data.pop("speak_sentences", None)
+    context.user_data.pop("speak_index", None)
+
+    if not scores:
+        await message.reply_text("Session ended.", reply_markup=_back_to_menu_keyboard())
+        return
+
+    total_score = sum(scores)
+    max_score = total * 10
+    pct = (total_score / max_score * 100) if max_score else 0
+
+    if pct >= 90:
+        grade = "🌟 Excellent!"
+    elif pct >= 70:
+        grade = "🔥 Great job!"
+    elif pct >= 50:
+        grade = "💪 Good effort!"
+    else:
+        grade = "📚 Keep practicing!"
+
+    per_question = "  ".join(f"{s}/10" for s in scores)
+
+    await message.reply_text(
+        f"<b>Speak Complete!</b>  [{level}]\n\n"
+        f"{grade}\n\n"
+        f"🏆 Total: <b>{total_score}/{max_score}</b> ({pct:.0f}%)\n\n"
+        f"Per sentence: {per_question}",
+        parse_mode="HTML",
+        reply_markup=_back_to_menu_keyboard(),
+    )
+
+
+async def speak_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("speak_sentences", "speak_index", "speak_scores", "speak_total", "speak_level"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Speak practice cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Health check server (required by Render Web Service) ─────────────────────
 
 def _start_health_server() -> None:
@@ -1452,6 +1649,24 @@ def main() -> None:
         ],
     )
 
+    speak_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("speak", speak_start),
+            CallbackQueryHandler(speak_start, pattern="^menu:speak$"),
+        ],
+        states={
+            SPEAK_LEVEL: [CallbackQueryHandler(speak_got_level, pattern=r"^speak_level:[ABC][12]$")],
+            SPEAK_ACTIVE: [
+                MessageHandler(filters.VOICE, speak_got_voice),
+                CallbackQueryHandler(speak_next, pattern="^speak:next$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", speak_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -1464,6 +1679,7 @@ def main() -> None:
     app.add_handler(pat_conv)
     app.add_handler(drill_conv)
     app.add_handler(read_conv)
+    app.add_handler(speak_conv)
 
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^menu:review$"))

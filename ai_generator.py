@@ -176,6 +176,74 @@ Return ONLY the JSON object. No markdown, no code fences, no explanation outside
     return json.loads(text)
 
 
+async def generate_speak_sentences(level: str, count: int = 7) -> list[dict]:
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+
+    prompt = f"""Generate {count} Ukrainian sentences for an English learner at level {level} ({level_desc}) to translate aloud.
+
+Rules:
+- Each Ukrainian sentence must have a clear, natural English translation
+- Difficulty must match {level}: very short simple sentences for A1/A2, more complex for B1/B2/C1/C2
+- Sentences should be practical and conversational (not artificial textbook examples)
+- The English translation must sound natural, not word-for-word
+
+Return a JSON array with exactly {count} objects, each with:
+- "uk": the Ukrainian sentence to show the user
+- "en": the natural English translation (what a native speaker would say)
+
+Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
+async def score_speak_answer(expected: str, user_said: str) -> dict:
+    prompt = f"""You are an English language coach. A learner was shown a Ukrainian sentence and asked to say the English translation aloud.
+
+Expected English: "{expected}"
+What the learner said: "{user_said}"
+
+Evaluate how well the learner conveyed the meaning. Consider: meaning accuracy (most important), grammar, and natural phrasing.
+
+Score 0–10: 10 = perfect or naturally equivalent; 7–9 = good with minor issues; 4–6 = meaning understood but notable errors; 1–3 = partially correct; 0 = wrong or unrelated.
+
+Return a JSON object with:
+- "score": integer 0–10
+- "feedback": 1–2 sentences of specific constructive feedback in English
+- "corrected": the ideal English sentence
+
+Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=300,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
 async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
     level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
 
