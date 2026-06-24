@@ -9,7 +9,7 @@ import re
 import threading
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -81,6 +81,13 @@ _TENSES = [
 
 # ── Utility ──────────────────────────────────────────────────────────────────
 
+_FIXED_KB = ReplyKeyboardMarkup(
+    [["🏠 Home", "🔄 Drill"]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
 def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -96,19 +103,19 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎯 Patterns", callback_data="menu:patterns"),
         ],
         [
-            InlineKeyboardButton("🔥 Drill", callback_data="menu:drill"),
             InlineKeyboardButton("📖 Reading", callback_data="menu:reading"),
-        ],
-        [
             InlineKeyboardButton("🗣 Speak", callback_data="menu:speak"),
-            InlineKeyboardButton("🔄 Repeat", callback_data="menu:repeat"),
         ],
         [
+            InlineKeyboardButton("🔄 Drill", callback_data="menu:drill"),
             InlineKeyboardButton("🕐 Tense", callback_data="menu:tense"),
-            InlineKeyboardButton("🎓 Lesson", callback_data="menu:lesson"),
         ],
         [
+            InlineKeyboardButton("🎓 Lesson", callback_data="menu:lesson"),
             InlineKeyboardButton("🎭 Role Play", callback_data="menu:roleplay"),
+        ],
+        [
+            InlineKeyboardButton("📋 Irregular Verbs", callback_data="menu:irreg"),
         ],
     ])
 
@@ -134,6 +141,7 @@ def _rating_keyboard(phrase_id: int) -> InlineKeyboardMarkup:
 # ── Generic commands ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Quick access buttons:", reply_markup=_FIXED_KB)
     await update.message.reply_text(MENU_TEXT, reply_markup=_main_menu_keyboard())
 
 
@@ -145,6 +153,13 @@ async def cb_show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(MENU_TEXT, reply_markup=_main_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handler for the fixed 🏠 Home / 🔄 Drill reply-keyboard buttons inside any conversation."""
+    context.user_data.clear()
+    await update.message.reply_text(MENU_TEXT, reply_markup=_main_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -2093,7 +2108,7 @@ async def _show_repeat_result(message, context: ContextTypes.DEFAULT_TYPE) -> No
         grade = "📚 Keep practicing!"
 
     await message.reply_text(
-        f"<b>Repeat Session Complete!</b>\n\n"
+        f"<b>Drill Session Complete!</b>\n\n"
         f"{grade}\n\n"
         f"✅ Phrases fully passed: {passed}/{phrase_count}\n\n"
         f"<i>A phrase passes only when all 3 steps are correct.</i>",
@@ -2105,7 +2120,7 @@ async def _show_repeat_result(message, context: ContextTypes.DEFAULT_TYPE) -> No
 async def repeat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for key in ("repeat_tasks", "repeat_index", "repeat_phrase_errors", "repeat_phrase_count"):
         context.user_data.pop(key, None)
-    await update.message.reply_text("Repeat session cancelled.", reply_markup=_back_to_menu_keyboard())
+    await update.message.reply_text("Drill session cancelled.", reply_markup=_back_to_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -2252,6 +2267,202 @@ async def roleplay_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
+# ── Irregular Verbs ───────────────────────────────────────────────────────────
+
+_IRREGULAR_VERBS: list[tuple[str, str, str, str]] = [
+    # (base, past simple, past participle, example sentence)
+    ("be",        "was / were",  "been",       "She has been a teacher for ten years."),
+    ("beat",      "beat",        "beaten",      "Our team beat the champions last night."),
+    ("become",    "became",      "become",      "He became a doctor after years of study."),
+    ("begin",     "began",       "begun",       "She has already begun the project."),
+    ("bend",      "bent",        "bent",        "He bent the rules just this once."),
+    ("bind",      "bound",       "bound",       "They bound the agreement with a handshake."),
+    ("bite",      "bit",         "bitten",      "The dog has bitten its owner before."),
+    ("bleed",     "bled",        "bled",        "The cut bled for several minutes."),
+    ("blow",      "blew",        "blown",       "The wind has blown the leaves away."),
+    ("break",     "broke",       "broken",      "She broke her phone by accident."),
+    ("breed",     "bred",        "bred",        "They bred horses on a large farm."),
+    ("bring",     "brought",     "brought",     "He brought flowers to the meeting."),
+    ("build",     "built",       "built",       "They built a new office last year."),
+    ("burn",      "burned / burnt", "burned / burnt", "She burned the toast this morning."),
+    ("buy",       "bought",      "bought",      "We bought tickets in advance."),
+    ("catch",     "caught",      "caught",      "He caught the ball with one hand."),
+    ("choose",    "chose",       "chosen",      "She chose the blue dress for the party."),
+    ("come",      "came",        "come",        "They have come a long way since then."),
+    ("cost",      "cost",        "cost",        "The repairs cost more than expected."),
+    ("cut",       "cut",         "cut",         "He cut his finger while cooking."),
+    ("deal",      "dealt",       "dealt",       "She dealt with the problem quickly."),
+    ("dig",       "dug",         "dug",         "They dug a hole in the backyard."),
+    ("do",        "did",         "done",        "Have you done your homework yet?"),
+    ("draw",      "drew",        "drawn",       "She drew a detailed map of the city."),
+    ("dream",     "dreamed / dreamt", "dreamed / dreamt", "He dreamed about his future career."),
+    ("drink",     "drank",       "drunk",       "She drank three cups of coffee today."),
+    ("drive",     "drove",       "driven",      "He has driven over 500 km today."),
+    ("eat",       "ate",         "eaten",       "We ate lunch at a small café."),
+    ("fall",      "fell",        "fallen",      "The apple fell from the tree."),
+    ("feed",      "fed",         "fed",         "She fed the baby every two hours."),
+    ("feel",      "felt",        "felt",        "I felt nervous before the presentation."),
+    ("fight",     "fought",      "fought",      "They fought hard to keep their jobs."),
+    ("find",      "found",       "found",       "She found her keys under the sofa."),
+    ("fly",       "flew",        "flown",       "He has flown to New York three times."),
+    ("forget",    "forgot",      "forgotten",   "I forgot to send the email."),
+    ("forgive",   "forgave",     "forgiven",    "She forgave him for his mistake."),
+    ("freeze",    "froze",       "frozen",      "The pipes froze during the winter."),
+    ("get",       "got",         "got / gotten","She got a promotion last month."),
+    ("give",      "gave",        "given",       "He gave a speech at the conference."),
+    ("go",        "went",        "gone",        "They have gone to the wrong address."),
+    ("grow",      "grew",        "grown",       "The company has grown rapidly."),
+    ("hang",      "hung",        "hung",        "She hung the painting on the wall."),
+    ("have",      "had",         "had",         "We had a great time at the party."),
+    ("hear",      "heard",       "heard",       "I heard a strange noise last night."),
+    ("hide",      "hid",         "hidden",      "The cat hid under the bed all day."),
+    ("hit",       "hit",         "hit",         "The ball hit the window and cracked it."),
+    ("hold",      "held",        "held",        "She held the baby carefully."),
+    ("hurt",      "hurt",        "hurt",        "He hurt his back at the gym."),
+    ("keep",      "kept",        "kept",        "She kept all the important documents."),
+    ("know",      "knew",        "known",       "He has known about this for weeks."),
+    ("lay",       "laid",        "laid",        "She laid the table for dinner."),
+    ("lead",      "led",         "led",         "He led the team to victory."),
+    ("leave",     "left",        "left",        "They left the office early on Friday."),
+    ("lend",      "lent",        "lent",        "She lent me her umbrella."),
+    ("let",       "let",         "let",         "He let her borrow his car."),
+    ("lie",       "lay",         "lain",        "She lay in bed all morning."),
+    ("lose",      "lost",        "lost",        "I lost my wallet on the train."),
+    ("make",      "made",        "made",        "She made a delicious cake."),
+    ("mean",      "meant",       "meant",       "I meant to call you earlier."),
+    ("meet",      "met",         "met",         "We met at a conference last year."),
+    ("pay",       "paid",        "paid",        "He paid for dinner with a card."),
+    ("put",       "put",         "put",         "She put the report on his desk."),
+    ("read",      "read",        "read",        "Have you read this article yet?"),
+    ("ride",      "rode",        "ridden",      "She rode her bicycle to work."),
+    ("ring",      "rang",        "rung",        "The phone rang during the meeting."),
+    ("rise",      "rose",        "risen",       "The sun rose at 5:30 this morning."),
+    ("run",       "ran",         "run",         "He ran a marathon last weekend."),
+    ("say",       "said",        "said",        "She said she would call back."),
+    ("see",       "saw",         "seen",        "I've never seen such a beautiful view."),
+    ("seek",      "sought",      "sought",      "They sought advice from an expert."),
+    ("sell",      "sold",        "sold",        "He sold his car to buy a motorcycle."),
+    ("send",      "sent",        "sent",        "She sent the report by email."),
+    ("set",       "set",         "set",         "He set a new record for the race."),
+    ("shake",     "shook",       "shaken",      "She shook hands with the interviewer."),
+    ("shine",     "shone",       "shone",       "The sun shone brightly all afternoon."),
+    ("shoot",     "shot",        "shot",        "The photographer shot hundreds of photos."),
+    ("show",      "showed",      "shown",       "She showed me around the new office."),
+    ("shut",      "shut",        "shut",        "He shut the window before the rain."),
+    ("sing",      "sang",        "sung",        "She sang at the corporate event."),
+    ("sink",      "sank",        "sunk",        "The boat sank after hitting a rock."),
+    ("sit",       "sat",         "sat",         "We sat in the conference room for hours."),
+    ("sleep",     "slept",       "slept",       "I slept for only five hours last night."),
+    ("speak",     "spoke",       "spoken",      "She has spoken English since childhood."),
+    ("spend",     "spent",       "spent",       "He spent the whole day on the report."),
+    ("spread",    "spread",      "spread",      "The news spread quickly on social media."),
+    ("stand",     "stood",       "stood",       "They stood in line for two hours."),
+    ("steal",     "stole",       "stolen",      "Someone stole his laptop at the café."),
+    ("stick",     "stuck",       "stuck",       "The lid got stuck and she couldn't open it."),
+    ("sting",     "stung",       "stung",       "A bee stung him on the hand."),
+    ("strike",    "struck",      "struck",      "Lightning struck the tree in the yard."),
+    ("swear",     "swore",       "sworn",       "He swore to tell the truth."),
+    ("sweep",     "swept",       "swept",       "She swept the floor before guests arrived."),
+    ("swim",      "swam",        "swum",        "He swam across the lake in the morning."),
+    ("swing",     "swung",       "swung",       "The child swung on the playground."),
+    ("take",      "took",        "taken",       "She took the train to avoid traffic."),
+    ("teach",     "taught",      "taught",      "He taught English at a local school."),
+    ("tear",      "tore",        "torn",        "She tore the contract in frustration."),
+    ("tell",      "told",        "told",        "He told us the meeting was cancelled."),
+    ("think",     "thought",     "thought",     "I thought the project was already done."),
+    ("throw",     "threw",       "thrown",      "She threw away old files to clear space."),
+    ("understand","understood",  "understood",  "I finally understood what he meant."),
+    ("wake",      "woke",        "woken",       "She woke up early for the flight."),
+    ("wear",      "wore",        "worn",        "He wore a suit to the interview."),
+    ("win",       "won",         "won",         "Our team won the championship again."),
+    ("withdraw",  "withdrew",    "withdrawn",   "She withdrew cash from the ATM."),
+    ("write",     "wrote",       "written",     "He has written three books so far."),
+    ("arise",     "arose",       "arisen",      "A problem arose during the deployment."),
+    ("forbid",    "forbade",     "forbidden",   "Smoking is forbidden in the building."),
+    ("forecast",  "forecast",    "forecast",    "They forecast heavy rain for the weekend."),
+    ("overcome",  "overcame",    "overcome",    "She overcame her fear of public speaking."),
+    ("undertake", "undertook",   "undertaken",  "He undertook a new research project."),
+    ("upset",     "upset",       "upset",       "The news upset her greatly."),
+    ("withdraw",  "withdrew",    "withdrawn",   "The company withdrew its offer."),
+    ("spread",    "spread",      "spread",      "She spread butter on the toast."),
+    ("cut",       "cut",         "cut",         "They cut costs to save the budget."),
+    ("split",     "split",       "split",       "They split the bill equally at dinner."),
+    ("bet",       "bet",         "bet",         "He bet on the wrong team."),
+    ("burst",     "burst",       "burst",       "The water pipe burst last winter."),
+    ("cast",      "cast",        "cast",        "She cast a quick glance at the clock."),
+    ("hit",       "hit",         "hit",         "The new product hit the market last month."),
+    ("shed",      "shed",        "shed",        "The company shed 200 jobs this year."),
+    ("slide",     "slid",        "slid",        "He slid the document across the table."),
+    ("speed",     "sped",        "sped",        "She sped through the presentation."),
+    ("spoil",     "spoiled / spoilt", "spoiled / spoilt", "The food spoiled because of the power cut."),
+    ("swell",     "swelled",     "swollen",     "His ankle swelled up after the fall."),
+    ("wind",      "wound",       "wound",       "She wound up the meeting early."),
+]
+
+IRREG_PAGE = 10
+
+
+def _build_irreg_view(offset: int) -> tuple[str, InlineKeyboardMarkup]:
+    total = len(_IRREGULAR_VERBS)
+    page = _IRREGULAR_VERBS[offset:offset + IRREG_PAGE]
+
+    lines = []
+    save_btns = []
+    for i, (base, past, pp, example) in enumerate(page):
+        num = offset + i + 1
+        lines.append(f"{num}. <b>{base}</b>  →  {past}  →  {pp}\n   💬 <i>{example}</i>")
+        save_btns.append(InlineKeyboardButton(f"💾 {num}", callback_data=f"irreg_save:{offset + i}"))
+
+    page_num = offset // IRREG_PAGE + 1
+    total_pages = (total + IRREG_PAGE - 1) // IRREG_PAGE
+    text = (
+        f"📋 <b>Irregular Verbs</b>  [{page_num}/{total_pages}]\n\n"
+        + "\n\n".join(lines)
+    )
+
+    rows_kb = []
+    for i in range(0, len(save_btns), 5):
+        rows_kb.append(save_btns[i:i + 5])
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("← Prev", callback_data=f"irreg:page:{offset - IRREG_PAGE}"))
+    if offset + IRREG_PAGE < total:
+        nav.append(InlineKeyboardButton("Next →", callback_data=f"irreg:page:{offset + IRREG_PAGE}"))
+    if nav:
+        rows_kb.append(nav)
+    rows_kb.append([InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")])
+
+    return text, InlineKeyboardMarkup(rows_kb)
+
+
+async def cb_irreg_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    text, markup = _build_irreg_view(0)
+    await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def cb_irreg_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    offset = int(query.data.split(":")[2])
+    text, markup = _build_irreg_view(offset)
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def cb_irreg_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    idx = int(query.data.split(":")[1])
+
+    if idx < len(_IRREGULAR_VERBS):
+        base, past, pp, example = _IRREGULAR_VERBS[idx]
+        db.add_phrase(update.effective_user.id, base, f"{past} / {pp}", example)
+        await query.answer(f"Saved: {base}!")
+    else:
+        await query.answer()
+
+
 # ── Health check server (required by Render Web Service) ─────────────────────
 
 def _start_health_server() -> None:
@@ -2284,21 +2495,31 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
+    _fixed_btn = filters.Regex("^(🏠 Home|🔄 Drill)$")
+
     add_conv = ConversationHandler(
         entry_points=[
             CommandHandler("add", add_start),
             CallbackQueryHandler(add_start, pattern="^menu:add$"),
         ],
         states={
-            PHRASE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_got_phrase)],
-            TRANSLATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_got_translation)],
+            PHRASE: [
+                MessageHandler(_fixed_btn, show_home),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_got_phrase),
+            ],
+            TRANSLATION: [
+                MessageHandler(_fixed_btn, show_home),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_got_translation),
+            ],
             EXAMPLE: [
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_got_example),
                 CallbackQueryHandler(add_skip_example, pattern="^skip_example$"),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", add_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2312,11 +2533,13 @@ def main() -> None:
             GEN_LEVEL: [CallbackQueryHandler(gen_got_level, pattern=r"^level:[ABC][12]$")],
             GEN_TOPIC: [
                 CallbackQueryHandler(gen_got_topic_cb, pattern=r"^topic:.+$"),
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, gen_got_topic_text),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", gen_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2328,6 +2551,7 @@ def main() -> None:
         ],
         states={
             CHAT_ACTIVE: [
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.VOICE, chat_voice_message),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, chat_message),
                 CallbackQueryHandler(chat_end_cb, pattern="^chat:end$"),
@@ -2335,6 +2559,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", chat_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2347,12 +2572,14 @@ def main() -> None:
         states={
             GRAM_LEVEL: [CallbackQueryHandler(gram_got_level, pattern=r"^gram_level:[ABC][12]$")],
             GRAM_ANSWER: [
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, gram_got_answer),
                 CallbackQueryHandler(gram_next, pattern="^gram:next$"),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", gram_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2371,28 +2598,11 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", pat_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
 
-    drill_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("drill", drill_start),
-            CallbackQueryHandler(drill_start, pattern="^menu:drill$"),
-        ],
-        states={
-            DRILL_LEVEL: [CallbackQueryHandler(drill_got_level, pattern=r"^drill_level:[ABC][12]$")],
-            DRILL_ACTIVE: [
-                MessageHandler(filters.VOICE, drill_got_voice),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, drill_got_answer),
-                CallbackQueryHandler(drill_next, pattern="^drill:next$"),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", drill_cancel),
-            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
-        ],
-    )
 
     read_conv = ConversationHandler(
         entry_points=[
@@ -2404,6 +2614,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", read_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2423,17 +2634,20 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", speak_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
 
     repeat_conv = ConversationHandler(
         entry_points=[
-            CommandHandler("repeat", repeat_start),
-            CallbackQueryHandler(repeat_start, pattern="^menu:repeat$"),
+            CommandHandler("drill", repeat_start),
+            CallbackQueryHandler(repeat_start, pattern="^menu:drill$"),
+            MessageHandler(filters.Regex("^🔄 Drill$"), repeat_start),
         ],
         states={
             REPEAT_ACTIVE: [
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.VOICE, repeat_got_voice),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, repeat_got_text),
                 CallbackQueryHandler(repeat_next, pattern="^repeat:next$"),
@@ -2441,6 +2655,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", repeat_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2455,6 +2670,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", tense_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2467,12 +2683,14 @@ def main() -> None:
         states={
             LESSON_LEVEL: [
                 CallbackQueryHandler(lesson_got_level, pattern=r"^lesson_level:[ABC][12]$"),
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, lesson_check_answer),
                 CallbackQueryHandler(lesson_next_check, pattern="^lesson:next_check$"),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", lesson_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2487,6 +2705,7 @@ def main() -> None:
                 CallbackQueryHandler(roleplay_topic_selected, pattern=r"^roleplay_topic:.+$"),
             ],
             ROLEPLAY_ACTIVE: [
+                MessageHandler(_fixed_btn, show_home),
                 MessageHandler(filters.VOICE, roleplay_voice_message),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, roleplay_message),
                 CallbackQueryHandler(roleplay_end_cb, pattern="^roleplay:end$"),
@@ -2494,6 +2713,7 @@ def main() -> None:
         },
         fallbacks=[
             CommandHandler("cancel", roleplay_cancel),
+            MessageHandler(_fixed_btn, show_home),
             CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
         ],
     )
@@ -2508,7 +2728,6 @@ def main() -> None:
     app.add_handler(chat_conv)
     app.add_handler(gram_conv)
     app.add_handler(pat_conv)
-    app.add_handler(drill_conv)
     app.add_handler(read_conv)
     app.add_handler(speak_conv)
     app.add_handler(repeat_conv)
@@ -2516,6 +2735,7 @@ def main() -> None:
     app.add_handler(lesson_conv)
     app.add_handler(roleplay_conv)
 
+    app.add_handler(MessageHandler(filters.Regex("^🏠 Home$"), show_home))
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^menu:review$"))
     app.add_handler(CallbackQueryHandler(cmd_list,           pattern="^menu:list$"))
@@ -2535,6 +2755,9 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_pat_save,    pattern=r"^pat_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_pat_skip,    pattern=r"^pat_skip:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_pat_browse,  pattern=r"^pat_browse:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_irreg_menu,  pattern="^menu:irreg$"))
+    app.add_handler(CallbackQueryHandler(cb_irreg_page,  pattern=r"^irreg:page:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_irreg_save,  pattern=r"^irreg_save:\d+$"))
 
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
