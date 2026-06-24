@@ -24,7 +24,7 @@ from telegram.ext import (
 import db
 import srs
 from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, score_speak_answer, text_to_speech, transcribe_audio
-from tutor_chat import tutor_open, tutor_reply
+from tutor_chat import tutor_open, tutor_reply, roleplay_open, roleplay_reply
 
 load_dotenv()
 
@@ -45,6 +45,18 @@ SPEAK_LEVEL, SPEAK_ACTIVE = range(2)
 REPEAT_ACTIVE = 0
 TENSE_SELECT = 0
 LESSON_LEVEL = 0
+ROLEPLAY_TOPIC, ROLEPLAY_ACTIVE = range(2)
+
+_ROLEPLAY_TOPICS = [
+    "Work Interview",
+    "Scrum Meeting",
+    "In restaurant",
+    "In hotel reception",
+    "In airport",
+    "With taxi driver",
+    "Small talk",
+    "In shop",
+]
 
 MENU_TEXT = "English Phrases Bot — learn with spaced repetition (SM-2)\n\nWhat would you like to do?"
 
@@ -94,6 +106,9 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("🕐 Tense", callback_data="menu:tense"),
             InlineKeyboardButton("🎓 Lesson", callback_data="menu:lesson"),
+        ],
+        [
+            InlineKeyboardButton("🎭 Role Play", callback_data="menu:roleplay"),
         ],
     ])
 
@@ -2032,6 +2047,149 @@ async def repeat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return ConversationHandler.END
 
 
+# ── Role Play ─────────────────────────────────────────────────────────────────
+
+_ROLEPLAY_END_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 End Role Play", callback_data="roleplay:end")]])
+
+
+async def roleplay_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    pairs = [_ROLEPLAY_TOPICS[i:i+2] for i in range(0, len(_ROLEPLAY_TOPICS), 2)]
+    rows = [
+        [InlineKeyboardButton(t, callback_data=f"roleplay_topic:{t}") for t in pair]
+        for pair in pairs
+    ]
+    rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu:home")])
+    await msg.reply_text(
+        "🎭 <b>Role Play</b>\n\nChoose a scenario to practise:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+    return ROLEPLAY_TOPIC
+
+
+async def roleplay_topic_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    scenario = query.data.split(":", 1)[1]
+    context.user_data["roleplay_scenario"] = scenario
+    context.user_data["roleplay_history"] = []
+
+    wait_msg = await query.message.reply_text("🎭 Setting the scene... ⏳")
+    try:
+        opening = await roleplay_open(scenario)
+    except Exception as e:
+        logger.error("roleplay_open error: %s", e)
+        await wait_msg.delete()
+        await query.message.reply_text(
+            f"🎭 <b>{scenario}</b>\n\nLet's begin! I'll play my role — you respond in English.\n\nTap <b>End Role Play</b> or /cancel to stop.",
+            parse_mode="HTML",
+            reply_markup=_ROLEPLAY_END_KB,
+        )
+        return ROLEPLAY_ACTIVE
+
+    context.user_data["roleplay_history"].append({"role": "assistant", "content": opening})
+
+    await wait_msg.delete()
+    await query.message.reply_text(
+        f"🎭 <b>{scenario}</b>\n\n{opening}",
+        parse_mode="HTML",
+        reply_markup=_ROLEPLAY_END_KB,
+    )
+
+    await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
+    try:
+        audio = await text_to_speech(opening)
+        await query.message.reply_voice(io.BytesIO(audio))
+    except Exception as e:
+        logger.error("TTS error in roleplay_topic_selected: %s", e)
+
+    return ROLEPLAY_ACTIVE
+
+
+async def _process_roleplay_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str
+) -> int:
+    message = update.message
+    scenario = context.user_data.get("roleplay_scenario", "")
+    history = context.user_data.get("roleplay_history", [])
+
+    await update.effective_chat.send_action(ChatAction.TYPING)
+
+    try:
+        reply = await roleplay_reply(user_text, history, scenario)
+    except Exception as e:
+        logger.error("roleplay_reply error: %s", e)
+        await message.reply_text("Something went wrong. Try again.", reply_markup=_ROLEPLAY_END_KB)
+        return ROLEPLAY_ACTIVE
+
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": reply})
+    if len(history) > 20:
+        history = history[-20:]
+    context.user_data["roleplay_history"] = history
+
+    corrections, response = _split_chat_reply(reply)
+
+    if corrections:
+        await message.reply_text(corrections)
+
+    response_text = response or reply
+    await message.reply_text(response_text, reply_markup=_ROLEPLAY_END_KB)
+
+    await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
+    try:
+        audio = await text_to_speech(response_text)
+        await message.reply_voice(io.BytesIO(audio))
+    except Exception as e:
+        logger.error("TTS error in roleplay: %s", e)
+
+    return ROLEPLAY_ACTIVE
+
+
+async def roleplay_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _process_roleplay_message(update, context, update.message.text.strip())
+
+
+async def roleplay_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    tg_file = await update.message.voice.get_file()
+    audio_bytes = bytes(await tg_file.download_as_bytearray())
+
+    wait = await update.message.reply_text("🎧 Transcribing... ⏳")
+    try:
+        transcription = await transcribe_audio(audio_bytes)
+    except Exception as e:
+        logger.error("transcribe_audio error in roleplay: %s", e)
+        await wait.edit_text("Could not transcribe. Please type your message instead.")
+        return ROLEPLAY_ACTIVE
+
+    await wait.delete()
+    await update.message.reply_text(f"🎤 You said: <i>{transcription}</i>", parse_mode="HTML")
+    return await _process_roleplay_message(update, context, transcription)
+
+
+async def roleplay_end_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("roleplay_history", None)
+    context.user_data.pop("roleplay_scenario", None)
+    await query.message.reply_text("Role play ended! Great practice. 💪", reply_markup=_main_menu_keyboard())
+    return ConversationHandler.END
+
+
+async def roleplay_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("roleplay_history", None)
+    context.user_data.pop("roleplay_scenario", None)
+    await update.message.reply_text("Role play cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Health check server (required by Render Web Service) ─────────────────────
 
 def _start_health_server() -> None:
@@ -2256,6 +2414,27 @@ def main() -> None:
         ],
     )
 
+    roleplay_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("roleplay", roleplay_start),
+            CallbackQueryHandler(roleplay_start, pattern="^menu:roleplay$"),
+        ],
+        states={
+            ROLEPLAY_TOPIC: [
+                CallbackQueryHandler(roleplay_topic_selected, pattern=r"^roleplay_topic:.+$"),
+            ],
+            ROLEPLAY_ACTIVE: [
+                MessageHandler(filters.VOICE, roleplay_voice_message),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, roleplay_message),
+                CallbackQueryHandler(roleplay_end_cb, pattern="^roleplay:end$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", roleplay_cancel),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -2272,6 +2451,7 @@ def main() -> None:
     app.add_handler(repeat_conv)
     app.add_handler(tense_conv)
     app.add_handler(lesson_conv)
+    app.add_handler(roleplay_conv)
 
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
     app.add_handler(CallbackQueryHandler(cmd_review,         pattern="^menu:review$"))
