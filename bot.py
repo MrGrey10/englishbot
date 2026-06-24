@@ -515,11 +515,12 @@ async def _show_generated_phrase(message, context: ContextTypes.DEFAULT_TYPE, in
 
     p = phrases[index]
     level = context.user_data.get("gen_level", "")
+    example_uk_line = f"\n   🇺🇦 {p['example_uk']}" if p.get("example_uk") else ""
     text = (
         f"<b>Phrase {index + 1}/{len(phrases)}</b>  [{level}]\n\n"
-        f"🔤 <b>{p['phrase']}</b>\n\n"
+        f"🔤 <b>{p['phrase']}</b>\n"
         f"📖 {p['translation']}\n\n"
-        f"💬 <i>{p['example']}</i>\n\n"
+        f"💬 <i>{p['example']}</i>{example_uk_line}\n\n"
         f"🏷 {p['context']}"
     )
     keyboard = InlineKeyboardMarkup([[
@@ -536,7 +537,16 @@ async def cb_gen_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if index < len(phrases):
         p = phrases[index]
-        db.add_phrase(update.effective_user.id, p["phrase"], p["translation"], p.get("example"))
+        example_sentence = p.get("example", "")
+        example_uk = p.get("example_uk", "")
+        translation = example_uk or p.get("translation", "")
+        note = f"{p['phrase']} — {p['translation']}" if p.get("translation") else p.get("phrase", "")
+        db.add_phrase(
+            update.effective_user.id,
+            example_sentence,
+            translation,
+            note,
+        )
         context.user_data["gen_saved"] = context.user_data.get("gen_saved", 0) + 1
         await query.answer("Saved!")
     else:

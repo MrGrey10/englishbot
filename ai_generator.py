@@ -52,8 +52,9 @@ Rules:
 
 Return a JSON array with exactly {count} objects, each with these keys:
 - "phrase": the English expression (concise, as it would actually be said)
-- "translation": natural Ukrainian translation
-- "example": short realistic sentence (10–20 words) showing it in context
+- "translation": natural Ukrainian translation of the phrase
+- "example": short realistic sentence (10–20 words) showing the phrase in context
+- "example_uk": natural Ukrainian translation of the example sentence
 - "context": brief usage note, e.g. "informal, with friends" / "expressing frustration" / "workplace"
 
 CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. If unsure, use a simpler but correct Ukrainian equivalent. Ukrainian is the user's native language — they will immediately notice invented words.
