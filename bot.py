@@ -2469,9 +2469,9 @@ async def cb_irreg_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         base, past, pp, example_en, example_uk = _IRREGULAR_VERBS[idx]
         db.add_phrase(
             update.effective_user.id,
-            base,
-            f"{past} / {pp}",
-            f"{example_en}\n{example_uk}",
+            example_en,
+            example_uk,
+            f"{base} → {past} → {pp}",
         )
         await query.answer(f"Saved: {base}!")
     else:
