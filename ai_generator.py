@@ -56,6 +56,8 @@ Return a JSON array with exactly {count} objects, each with these keys:
 - "example": short realistic sentence (10–20 words) showing it in context
 - "context": brief usage note, e.g. "informal, with friends" / "expressing frustration" / "workplace"
 
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. If unsure, use a simpler but correct Ukrainian equivalent. Ukrainian is the user's native language — they will immediately notice invented words.
+
 Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
 
     response = await _get_client().chat.completions.create(
@@ -96,6 +98,8 @@ Return a JSON array with exactly {count} objects, each with these keys:
 - "examples": array of 3 objects, each with:
     - "en": the English example sentence (short, 5–15 words)
     - "uk": natural Ukrainian translation
+
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. Ukrainian is the user's native language — they will immediately notice invented words.
 
 Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
 
@@ -157,6 +161,8 @@ Return a JSON object with these keys:
     - "meaning": brief Ukrainian translation or explanation
 - "translation": full natural Ukrainian translation of the passage
 
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. Ukrainian is the user's native language — they will immediately notice invented words.
+
 Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
 
     response = await _get_client().chat.completions.create(
@@ -190,6 +196,8 @@ Rules:
 Return a JSON array with exactly {count} objects, each with:
 - "uk": the Ukrainian sentence to show the user
 - "en": the natural English translation (what a native speaker would say)
+
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. Ukrainian is the user's native language — they will immediately notice invented words.
 
 Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
 
@@ -247,15 +255,19 @@ Return ONLY the JSON object. No markdown, no code fences, no explanation outside
 async def generate_tense_lesson(tense: str) -> dict:
     prompt = f"""You are an expert English teacher. Create a clear, practical lesson on the English tense: "{tense}".
 
+IMPORTANT: Write "formation" and "when_to_use" in simple English (A2-B1 level). Use short sentences. Avoid grammar jargon — say "action" not "clause", "word" not "morpheme", etc. A learner with basic English must understand every sentence.
+
 Return a JSON object with these keys:
 - "tense": the tense name
-- "formation": 1-2 sentences showing how to form this tense (subject + verb structure) with a short example
-- "when_to_use": 2-3 sentences explaining when native speakers actually use this tense in real life
+- "formation": 1-2 short simple sentences showing how to build this tense, with one example
+- "when_to_use": 2-3 short simple sentences: when do people use this tense in real life?
 - "signal_words": array of 4-5 common signal words or time expressions used with this tense (e.g. "already", "since", "for")
 - "phrases": array of exactly 6 objects, each with:
     - "en": a natural everyday English sentence using this tense (avoid textbook clichés)
     - "uk": natural Ukrainian translation
     - "note": one short note about why this tense is used here (max 10 words)
+
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. Ukrainian is the user's native language — they will immediately notice invented words.
 
 Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
 
@@ -286,12 +298,14 @@ Articles (a/an/the), Prepositions of time, Prepositions of place, Modal verbs, P
 
 Generate a complete, expanded lesson on your chosen topic for level {level}.
 
+IMPORTANT: Write "tagline", "explanation", "structure", and "common_mistake" in simple English (A2-B1 level). Use short sentences. No grammar jargon — avoid words like "clause", "morpheme", "auxiliary", "copula". If you must name a grammar term, explain it in plain words right after. Every sentence must be easy for a basic English learner to read.
+
 Return a JSON object with these keys:
 - "topic": the grammar rule name (e.g. "Passive Voice", "Articles")
-- "tagline": one sentence saying what this rule helps you do in English
-- "explanation": 3–4 sentences explaining what the rule is and WHY it exists (simple, clear, practical)
-- "structure": how to form it — 1-3 lines showing the pattern, e.g. "Subject + is/are + past participle"
-- "common_mistake": the single most common error Ukrainian speakers make with this rule (1-2 sentences), with a wrong example and the correct version
+- "tagline": one short simple sentence — what does this rule help you do?
+- "explanation": 3–4 short simple sentences explaining what the rule is and WHY it is used
+- "structure": how to build it — 1-3 short lines showing the pattern, e.g. "Subject + is/are + past participle"
+- "common_mistake": the most common error Ukrainian speakers make (1-2 short sentences), show a wrong example and the correct version
 - "examples": array of exactly 6 objects, each with:
     - "en": a natural, everyday English sentence using this rule (avoid clichés)
     - "uk": natural Ukrainian translation
@@ -300,6 +314,8 @@ Return a JSON object with these keys:
     - "sentence": sentence with ___ for the missing word/phrase
     - "answer": the correct answer (lowercase, as a learner would type it)
     - "explanation": one sentence saying why that answer is correct
+
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist. Do NOT invent or make up Ukrainian words. Ukrainian is the user's native language — they will immediately notice invented words.
 
 Return ONLY the JSON object. No markdown, no code fences, no explanation outside the JSON."""
 
@@ -330,12 +346,13 @@ Rules:
 - The missing word must test a grammar point appropriate for {level}: verb forms, tenses, articles, prepositions, modal verbs, etc.
 - Sentences must be realistic, natural everyday English — not textbook-boring
 - Adjust difficulty strictly to {level}: very simple for A1/A2, more complex grammar for B1/B2/C1/C2
+- Write "hint" in simple English (A2-B1 level): short, no grammar jargon. Say what the rule does, not what it is called.
 
 Return a JSON array with exactly {count} objects, each with these keys:
 - "sentence": the sentence with ___ replacing the missing word
 - "answer": the single correct word that fills the blank (lowercase)
 - "full_sentence": the complete sentence with the answer filled in
-- "hint": short grammar tip explaining why this answer is correct (1 sentence)
+- "hint": one short simple sentence explaining why this answer is correct (no jargon)
 
 Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
 

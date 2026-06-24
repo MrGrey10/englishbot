@@ -346,9 +346,15 @@ async def _send_list(message, user_id: int, offset: int) -> None:
 
 def _build_list_view(rows, total: int, offset: int):
     lines = []
+    delete_btns = []
     for i, r in enumerate(rows, offset + 1):
         lines.append(f"{i}. <b>{r['phrase']}</b> — {r['translation']}")
+        delete_btns.append(InlineKeyboardButton(f"🗑 {i}", callback_data=f"del_phrase:{r['id']}:{offset}"))
     text = "\n".join(lines) + f"\n\n<i>{total} phrase(s) total</i>"
+
+    rows_kb = []
+    if delete_btns:
+        rows_kb.append(delete_btns)
 
     nav = []
     if offset > 0:
@@ -356,10 +362,34 @@ def _build_list_view(rows, total: int, offset: int):
     if offset + PAGE < total:
         nav.append(InlineKeyboardButton("Next →", callback_data=f"page:{offset + PAGE}"))
 
-    rows_kb = [nav] if nav else []
+    if nav:
+        rows_kb.append(nav)
     rows_kb.append([InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")])
     markup = InlineKeyboardMarkup(rows_kb)
     return text, markup
+
+
+async def cb_delete_phrase(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer("Deleted!")
+
+    parts = query.data.split(":")
+    phrase_id, offset = int(parts[1]), int(parts[2])
+    user_id = update.effective_user.id
+
+    db.delete_phrase(phrase_id, user_id)
+
+    total = db.count_phrases(user_id)
+    if total == 0:
+        await query.edit_message_text("No phrases left.", reply_markup=_back_to_menu_keyboard())
+        return
+
+    if offset >= total:
+        offset = max(0, offset - PAGE)
+
+    rows = db.get_all_phrases(user_id, offset, PAGE)
+    text, markup = _build_list_view(rows, total, offset)
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
 
 
 # ── Generate (AI phrases) ─────────────────────────────────────────────────────
@@ -1520,10 +1550,13 @@ async def speak_got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"💡 {result.get('feedback', '')}\n\n"
         f"✅ <b>{result.get('corrected', item['en'])}</b>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="speak:next"),
-            InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
-        ]]),
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="speak:next"),
+                InlineKeyboardButton("💾 Save", callback_data=f"speak_save:{index}"),
+            ],
+            [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+        ]),
     )
     return SPEAK_ACTIVE
 
@@ -1540,6 +1573,29 @@ async def speak_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     await _show_speak_sentence(query.message, context)
+    return SPEAK_ACTIVE
+
+
+async def cb_speak_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+
+    orig_index = int(query.data.split(":")[1])
+    sentences = context.user_data.get("speak_sentences", [])
+
+    if orig_index < len(sentences):
+        item = sentences[orig_index]
+        db.add_phrase(update.effective_user.id, item["en"], item["uk"], None)
+        await query.answer("Saved!")
+    else:
+        await query.answer()
+
+    cur_index = context.user_data.get("speak_index", 0)
+    total = context.user_data.get("speak_total", 0)
+    is_last = cur_index >= total
+    await query.edit_message_reply_markup(InlineKeyboardMarkup([
+        [InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="speak:next")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+    ]))
     return SPEAK_ACTIVE
 
 
@@ -2362,6 +2418,7 @@ def main() -> None:
             SPEAK_ACTIVE: [
                 MessageHandler(filters.VOICE, speak_got_voice),
                 CallbackQueryHandler(speak_next, pattern="^speak:next$"),
+                CallbackQueryHandler(cb_speak_save, pattern=r"^speak_save:\d+$"),
             ],
         },
         fallbacks=[
@@ -2471,7 +2528,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cmd_list,           pattern="^phrases:browse$"))
     app.add_handler(CallbackQueryHandler(cb_show_answer, pattern=r"^show:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_rate,        pattern=r"^rate:\d+:\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_list_page,   pattern=r"^page:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_list_page,    pattern=r"^page:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_delete_phrase, pattern=r"^del_phrase:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_gen_save,    pattern=r"^gen_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_gen_skip,    pattern=r"^gen_skip:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_pat_save,    pattern=r"^pat_save:\d+$"))
