@@ -499,6 +499,24 @@ async def cb_gen_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 _CHAT_END_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 End Chat", callback_data="chat:end")]])
 
 
+def _split_chat_reply(reply: str) -> tuple[str, str]:
+    """Split reply into (corrections, response). Corrections are leading ✏️ lines."""
+    lines = reply.split('\n')
+    correction_lines = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith('✏️'):
+            correction_lines.append(line)
+        elif line.strip() == '' and correction_lines:
+            i += 1
+            break
+        else:
+            break
+        i += 1
+    return '\n'.join(correction_lines).strip(), '\n'.join(lines[i:]).strip()
+
+
 async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.callback_query:
         await update.callback_query.answer()
@@ -562,11 +580,17 @@ async def _process_chat_message(
         history = history[-20:]
     context.user_data["chat_history"] = history
 
-    await message.reply_text(reply, reply_markup=_CHAT_END_KB)
+    corrections, response = _split_chat_reply(reply)
+
+    if corrections:
+        await message.reply_text(corrections)
+
+    response_text = response or reply
+    await message.reply_text(response_text, reply_markup=_CHAT_END_KB)
 
     await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
     try:
-        audio = await text_to_speech(reply)
+        audio = await text_to_speech(response_text)
         await message.reply_voice(io.BytesIO(audio))
     except Exception as e:
         logger.error("TTS error: %s", e)
