@@ -532,6 +532,12 @@ def _split_chat_reply(reply: str) -> tuple[str, str]:
     return '\n'.join(correction_lines).strip(), '\n'.join(lines[i:]).strip()
 
 
+def _tts_safe(text: str) -> str:
+    """Strip all correction lines so TTS only speaks the dialogue part."""
+    lines = [l for l in text.split('\n') if '✏️' not in l]
+    return '\n'.join(lines).strip()
+
+
 async def chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.callback_query:
         await update.callback_query.answer()
@@ -605,7 +611,7 @@ async def _process_chat_message(
 
     await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
     try:
-        audio = await text_to_speech(response_text)
+        audio = await text_to_speech(_tts_safe(response_text))
         await message.reply_voice(io.BytesIO(audio))
     except Exception as e:
         logger.error("TTS error: %s", e)
@@ -2145,7 +2151,7 @@ async def _process_roleplay_message(
 
     await update.effective_chat.send_action(ChatAction.RECORD_VOICE)
     try:
-        audio = await text_to_speech(response_text)
+        audio = await text_to_speech(_tts_safe(response_text))
         await message.reply_voice(io.BytesIO(audio))
     except Exception as e:
         logger.error("TTS error in roleplay: %s", e)
