@@ -1708,10 +1708,13 @@ async def tense_got_tense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return ConversationHandler.END
 
+    phrases = result.get("phrases", [])
+    context.user_data["tense_phrases"] = phrases
+
     signal_words = " · ".join(result.get("signal_words", []))
     phrases_text = "\n\n".join(
-        f"• <i>{p['en']}</i>\n  🇺🇦 {p['uk']}\n  💡 {p.get('note', '')}"
-        for p in result.get("phrases", [])
+        f"{i+1}. <i>{p['en']}</i>\n  🇺🇦 {p['uk']}\n  💡 {p.get('note', '')}"
+        for i, p in enumerate(phrases)
     )
 
     text = (
@@ -1722,9 +1725,28 @@ async def tense_got_tense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"💬 <b>Common phrases</b>\n\n{phrases_text}"
     )
 
+    save_buttons = [
+        InlineKeyboardButton(f"💾 {i+1}", callback_data=f"tense_save:{i}")
+        for i in range(len(phrases))
+    ]
+    save_rows = [save_buttons[i:i+3] for i in range(0, len(save_buttons), 3)]
+    markup = InlineKeyboardMarkup(save_rows + [[InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")]])
+
     await wait_msg.delete()
-    await query.message.reply_text(text, parse_mode="HTML", reply_markup=_back_to_menu_keyboard())
+    await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     return ConversationHandler.END
+
+
+async def cb_tense_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    idx = int(query.data.split(":")[1])
+    phrases = context.user_data.get("tense_phrases", [])
+    if idx < len(phrases):
+        p = phrases[idx]
+        db.add_phrase(update.effective_user.id, p["en"], p["uk"], p.get("note") or None)
+        await query.answer(f"Saved: {p['en'][:40]}!")
+    else:
+        await query.answer()
 
 
 async def tense_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2773,6 +2795,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_irreg_menu,  pattern="^menu:irreg$"))
     app.add_handler(CallbackQueryHandler(cb_irreg_page,  pattern=r"^irreg:page:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_irreg_save,  pattern=r"^irreg_save:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_tense_save,  pattern=r"^tense_save:\d+$"))
 
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
