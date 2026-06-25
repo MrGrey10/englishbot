@@ -23,7 +23,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, generate_vocabulary, score_speak_answer, text_to_speech, transcribe_audio
+from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_new_words, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, generate_vocabulary, score_speak_answer, text_to_speech, transcribe_audio
 from tutor_chat import tutor_open, tutor_reply, roleplay_open, roleplay_reply
 
 load_dotenv()
@@ -48,6 +48,7 @@ LESSON_LEVEL = 0
 ROLEPLAY_TOPIC, ROLEPLAY_ACTIVE = range(2)
 VOCAB_LEVEL, VOCAB_TOPIC = range(2)
 DRILL_WORDS_ACTIVE = 0
+NEW_WORDS_LEVEL, NEW_WORDS_TOPIC = range(2)
 
 _ROLEPLAY_TOPICS = [
     "Work Interview",
@@ -118,6 +119,7 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📋 Irregular Verbs", callback_data="menu:irreg"),
+            InlineKeyboardButton("🆕 New Words", callback_data="menu:new_words"),
         ],
         [
             InlineKeyboardButton("📖 Vocabulary", callback_data="menu:vocab"),
@@ -2004,6 +2006,140 @@ async def drill_words_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
+# ── New Words ─────────────────────────────────────────────────────────────────
+
+async def new_words_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"nw_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"nw_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+    ])
+    await msg.reply_text(
+        "🆕 <b>New Words</b>\n\nChoose your level:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return NEW_WORDS_LEVEL
+
+
+async def new_words_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    context.user_data["nw_level"] = level
+    context.user_data["nw_shown"] = []
+
+    await query.edit_message_text(
+        f"Level: <b>{level}</b>\n\n✏️ Type the topic you want words for\n(e.g. <i>Travel, Cooking, Technology</i>):",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+    )
+    return NEW_WORDS_TOPIC
+
+
+async def new_words_got_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    topic = update.message.text.strip()
+    context.user_data["nw_topic"] = topic
+    context.user_data["nw_page"] = 1
+
+    await update.message.reply_text(
+        f"Level: <b>{context.user_data['nw_level']}</b> · Topic: <b>{topic}</b>",
+        parse_mode="HTML",
+    )
+    await _run_new_words_page(update.message, context)
+    return ConversationHandler.END
+
+
+async def _run_new_words_page(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    level = context.user_data.get("nw_level", "B1")
+    topic = context.user_data.get("nw_topic", "")
+    shown = context.user_data.get("nw_shown", [])
+    page = context.user_data.get("nw_page", 1)
+
+    wait_msg = await message.reply_text(f"Generating page {page}... ⏳")
+    try:
+        words = await generate_new_words(level, topic, shown)
+    except Exception as e:
+        logger.error("generate_new_words error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate words. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    context.user_data["nw_words"] = words
+    context.user_data["nw_shown"] = shown + [w["word"] for w in words]
+
+    words_text = "\n\n".join(
+        f"{i+1}. <b>{w['word']}</b> <i>({w.get('pos', '')})</i>\n"
+        f"   🇺🇦 {w['translation']}\n"
+        f"   💬 {w['example']}\n"
+        f"      🇺🇦 {w.get('example_uk', '')}"
+        for i, w in enumerate(words)
+    )
+    text = (
+        f"🆕 <b>New Words — {level} · {topic}</b>  <i>Page {page}</i>\n\n"
+        f"{words_text}"
+    )
+
+    save_buttons = [
+        InlineKeyboardButton(f"💾 {i+1}", callback_data=f"nw_save:{i}")
+        for i in range(len(words))
+    ]
+    save_rows = [save_buttons[i:i+5] for i in range(0, len(save_buttons), 5)]
+    markup = InlineKeyboardMarkup(
+        save_rows + [[
+            InlineKeyboardButton("➡️ Next 10 words", callback_data="nw:next"),
+            InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+        ]]
+    )
+
+    await wait_msg.delete()
+    await message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def cb_nw_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    idx = int(query.data.split(":")[1])
+    words = context.user_data.get("nw_words", [])
+    if idx < len(words):
+        w = words[idx]
+        example = f"({w.get('pos', '')}) {w.get('example', '')}" if w.get("example") else None
+        db.add_phrase(update.effective_user.id, w["word"], w["translation"], example)
+        await query.answer(f"Saved: {w['word']}!")
+    else:
+        await query.answer()
+
+
+async def cb_nw_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if not context.user_data.get("nw_topic"):
+        await query.message.reply_text(
+            "Session expired. Please start a new session from the menu.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    context.user_data["nw_page"] = context.user_data.get("nw_page", 1) + 1
+    await _run_new_words_page(query.message, context)
+
+
+async def new_words_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("nw_level", "nw_topic", "nw_shown", "nw_words", "nw_page"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("New Words cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Grammar Lesson ────────────────────────────────────────────────────────────
 
 async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3060,8 +3196,28 @@ def main() -> None:
     app.add_handler(tense_conv)
     app.add_handler(lesson_conv)
     app.add_handler(roleplay_conv)
+    new_words_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("newwords", new_words_start),
+            CallbackQueryHandler(new_words_start, pattern="^menu:new_words$"),
+        ],
+        states={
+            NEW_WORDS_LEVEL: [CallbackQueryHandler(new_words_got_level, pattern=r"^nw_level:[ABC][12]$")],
+            NEW_WORDS_TOPIC: [
+                MessageHandler(_fixed_btn, show_home),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, new_words_got_topic),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", new_words_cancel),
+            MessageHandler(_fixed_btn, show_home),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
     app.add_handler(vocab_conv)
     app.add_handler(drill_words_conv)
+    app.add_handler(new_words_conv)
 
     app.add_handler(MessageHandler(filters.Regex("^🏠 Home$"), show_home))
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
@@ -3088,6 +3244,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_irreg_save,  pattern=r"^irreg_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_tense_save,  pattern=r"^tense_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_vocab_save,  pattern=r"^vocab_save:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_nw_save,     pattern=r"^nw_save:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_nw_next,     pattern="^nw:next$"))
 
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
