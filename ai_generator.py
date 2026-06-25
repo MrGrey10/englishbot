@@ -289,6 +289,41 @@ Return ONLY the JSON object. No markdown, no code fences, no explanation outside
     return json.loads(text)
 
 
+async def generate_vocabulary(level: str, topic: str | None = None) -> list[dict]:
+    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+    topic_ctx = (
+        f'related to the topic "{topic}"'
+        if topic and topic.strip().lower() not in ("any", "")
+        else "covering a mix of useful everyday topics"
+    )
+
+    prompt = f"""You are an English vocabulary teacher. Generate exactly 8 English vocabulary words {topic_ctx} for a Ukrainian learner at level {level} ({level_desc}).
+
+For each word return a JSON object with:
+- "word": the English word or short phrase (e.g. "ambitious", "look forward to")
+- "translation": natural Ukrainian translation (1-3 words, real Ukrainian)
+- "pos": part of speech abbreviation: noun / verb / adj / adv / phrase
+- "example": a short natural English sentence using the word (max 12 words)
+- "example_uk": natural Ukrainian translation of that sentence
+
+Return a JSON array of exactly 8 objects. No markdown, no code fences, no extra text outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
 async def generate_grammar_lesson(level: str) -> dict:
     level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
 

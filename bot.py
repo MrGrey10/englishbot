@@ -23,7 +23,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, score_speak_answer, text_to_speech, transcribe_audio
+from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, generate_vocabulary, score_speak_answer, text_to_speech, transcribe_audio
 from tutor_chat import tutor_open, tutor_reply, roleplay_open, roleplay_reply
 
 load_dotenv()
@@ -46,6 +46,8 @@ REPEAT_ACTIVE = 0
 TENSE_SELECT = 0
 LESSON_LEVEL = 0
 ROLEPLAY_TOPIC, ROLEPLAY_ACTIVE = range(2)
+VOCAB_LEVEL, VOCAB_TOPIC = range(2)
+DRILL_WORDS_ACTIVE = 0
 
 _ROLEPLAY_TOPICS = [
     "Work Interview",
@@ -116,6 +118,10 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📋 Irregular Verbs", callback_data="menu:irreg"),
+        ],
+        [
+            InlineKeyboardButton("📖 Vocabulary", callback_data="menu:vocab"),
+            InlineKeyboardButton("🔤 Drill Words", callback_data="menu:drill_words"),
         ],
     ])
 
@@ -1754,6 +1760,250 @@ async def tense_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+# ── Vocabulary ────────────────────────────────────────────────────────────────
+
+async def vocab_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(l, callback_data=f"vocab_level:{l}") for l in ("A1", "A2", "B1")],
+        [InlineKeyboardButton(l, callback_data=f"vocab_level:{l}") for l in ("B2", "C1", "C2")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
+    ])
+    await msg.reply_text(
+        "📖 <b>Vocabulary</b>\n\nChoose your level:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return VOCAB_LEVEL
+
+
+async def vocab_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    level = query.data.split(":")[1]
+    context.user_data["vocab_level"] = level
+
+    topic_buttons = [
+        [InlineKeyboardButton(t, callback_data=f"vocab_topic:{t}") for t in _GEN_TOPICS[i:i+3]]
+        for i in range(0, len(_GEN_TOPICS), 3)
+    ]
+    topic_buttons.append([InlineKeyboardButton("🏠 Menu", callback_data="menu:home")])
+    await query.edit_message_text(
+        f"Level: <b>{level}</b>\n\nChoose a topic or type your own:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(topic_buttons),
+    )
+    return VOCAB_TOPIC
+
+
+async def vocab_got_topic_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    topic = query.data.split(":", 1)[1]
+    context.user_data["vocab_topic"] = None if topic == "Any" else topic
+    await query.edit_message_text(
+        f"Level: <b>{context.user_data['vocab_level']}</b> · Topic: <b>{topic}</b>",
+        parse_mode="HTML",
+    )
+    await _run_vocab_generation(query.message, context)
+    return ConversationHandler.END
+
+
+async def vocab_got_topic_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    topic = update.message.text.strip()
+    context.user_data["vocab_topic"] = topic
+    await update.message.reply_text(
+        f"Level: <b>{context.user_data['vocab_level']}</b> · Topic: <b>{topic}</b>",
+        parse_mode="HTML",
+    )
+    await _run_vocab_generation(update.message, context)
+    return ConversationHandler.END
+
+
+async def _run_vocab_generation(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    level = context.user_data.get("vocab_level", "B1")
+    topic = context.user_data.get("vocab_topic")
+
+    wait_msg = await message.reply_text("Generating vocabulary... ⏳")
+    try:
+        words = await generate_vocabulary(level, topic)
+    except Exception as e:
+        logger.error("generate_vocabulary error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate vocabulary. Make sure GROQ_API_KEY is set.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    context.user_data["vocab_words"] = words
+
+    words_text = "\n\n".join(
+        f"{i+1}. <b>{w['word']}</b> <i>({w.get('pos', '')})</i>\n"
+        f"   🇺🇦 {w['translation']}\n"
+        f"   💬 {w['example']}\n"
+        f"      🇺🇦 {w.get('example_uk', '')}"
+        for i, w in enumerate(words)
+    )
+    topic_label = topic or "General"
+    text = f"📖 <b>Vocabulary — {level} · {topic_label}</b>\n\n{words_text}"
+
+    save_buttons = [
+        InlineKeyboardButton(f"💾 {i+1}", callback_data=f"vocab_save:{i}")
+        for i in range(len(words))
+    ]
+    save_rows = [save_buttons[i:i+4] for i in range(0, len(save_buttons), 4)]
+    markup = InlineKeyboardMarkup(save_rows + [[InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")]])
+
+    await wait_msg.delete()
+    await message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def cb_vocab_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    idx = int(query.data.split(":")[1])
+    words = context.user_data.get("vocab_words", [])
+    if idx < len(words):
+        w = words[idx]
+        example = f"({w.get('pos', '')}) {w.get('example', '')}" if w.get('example') else None
+        db.add_phrase(update.effective_user.id, w["word"], w["translation"], example)
+        await query.answer(f"Saved: {w['word']}!")
+    else:
+        await query.answer()
+
+
+async def vocab_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("vocab_level", None)
+    context.user_data.pop("vocab_topic", None)
+    await update.message.reply_text("Vocabulary cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
+# ── Drill Words ───────────────────────────────────────────────────────────────
+
+async def drill_words_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+        msg = update.callback_query.message
+    else:
+        msg = update.message
+
+    user_id = update.effective_user.id
+    phrases = db.get_all_phrases(user_id, 0, 50)
+    if not phrases:
+        await msg.reply_text(
+            "No saved words yet! Save some vocabulary or phrases first.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    sample = random.sample(list(phrases), min(10, len(phrases)))
+    random.shuffle(sample)
+
+    context.user_data["dw_queue"] = sample
+    context.user_data["dw_index"] = 0
+    context.user_data["dw_correct"] = 0
+
+    await _show_drill_words_question(msg, context)
+    return DRILL_WORDS_ACTIVE
+
+
+async def _show_drill_words_question(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    queue = context.user_data["dw_queue"]
+    index = context.user_data["dw_index"]
+    total = len(queue)
+
+    if index >= total:
+        await _show_drill_words_result(message, context)
+        return
+
+    p = queue[index]
+    await message.reply_text(
+        f"<b>Word {index + 1}/{total}</b>\n\n"
+        f"🔤 What does this mean in Ukrainian?\n\n"
+        f"<b>{p['phrase']}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+    )
+
+
+async def drill_words_got_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    queue = context.user_data.get("dw_queue", [])
+    index = context.user_data.get("dw_index", 0)
+    if index >= len(queue):
+        return ConversationHandler.END
+
+    p = queue[index]
+    user_answer = update.message.text.strip()
+    is_correct = _normalize_answer(user_answer) == _normalize_answer(p["translation"])
+
+    if is_correct:
+        context.user_data["dw_correct"] = context.user_data.get("dw_correct", 0) + 1
+
+    context.user_data["dw_index"] = index + 1
+    is_last = context.user_data["dw_index"] >= len(queue)
+
+    result_line = "✅ Correct!" if is_correct else f"❌ Wrong! Answer: <b>{p['translation']}</b>"
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="dw:next"),
+        InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+    ]])
+    await update.message.reply_text(result_line, parse_mode="HTML", reply_markup=keyboard)
+    return DRILL_WORDS_ACTIVE
+
+
+async def drill_words_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    index = context.user_data.get("dw_index", 0)
+    total = len(context.user_data.get("dw_queue", []))
+
+    if index >= total:
+        await _show_drill_words_result(query.message, context)
+        return ConversationHandler.END
+
+    await _show_drill_words_question(query.message, context)
+    return DRILL_WORDS_ACTIVE
+
+
+async def _show_drill_words_result(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    correct = context.user_data.pop("dw_correct", 0)
+    total = len(context.user_data.pop("dw_queue", []))
+    context.user_data.pop("dw_index", None)
+
+    pct = (correct / total * 100) if total else 0
+    if pct >= 90:
+        grade = "🌟 Excellent!"
+    elif pct >= 70:
+        grade = "🔥 Great job!"
+    elif pct >= 50:
+        grade = "💪 Good effort!"
+    else:
+        grade = "📚 Keep practicing!"
+
+    await message.reply_text(
+        f"<b>Drill Words Complete!</b>\n\n"
+        f"{grade}\n\n"
+        f"✅ Correct: {correct}/{total}",
+        parse_mode="HTML",
+        reply_markup=_back_to_menu_keyboard(),
+    )
+
+
+async def drill_words_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("dw_queue", "dw_index", "dw_correct"):
+        context.user_data.pop(key, None)
+    await update.message.reply_text("Drill Words cancelled.", reply_markup=_back_to_menu_keyboard())
+    return ConversationHandler.END
+
+
 # ── Grammar Lesson ────────────────────────────────────────────────────────────
 
 async def lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2755,6 +3005,45 @@ def main() -> None:
         ],
     )
 
+    vocab_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("vocab", vocab_start),
+            CallbackQueryHandler(vocab_start, pattern="^menu:vocab$"),
+        ],
+        states={
+            VOCAB_LEVEL: [CallbackQueryHandler(vocab_got_level, pattern=r"^vocab_level:[ABC][12]$")],
+            VOCAB_TOPIC: [
+                CallbackQueryHandler(vocab_got_topic_cb, pattern=r"^vocab_topic:.+$"),
+                MessageHandler(_fixed_btn, show_home),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, vocab_got_topic_text),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", vocab_cancel),
+            MessageHandler(_fixed_btn, show_home),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
+    drill_words_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("drillwords", drill_words_start),
+            CallbackQueryHandler(drill_words_start, pattern="^menu:drill_words$"),
+        ],
+        states={
+            DRILL_WORDS_ACTIVE: [
+                MessageHandler(_fixed_btn, show_home),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, drill_words_got_answer),
+                CallbackQueryHandler(drill_words_next, pattern="^dw:next$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", drill_words_cancel),
+            MessageHandler(_fixed_btn, show_home),
+            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
+        ],
+    )
+
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("review", cmd_review))
@@ -2771,6 +3060,8 @@ def main() -> None:
     app.add_handler(tense_conv)
     app.add_handler(lesson_conv)
     app.add_handler(roleplay_conv)
+    app.add_handler(vocab_conv)
+    app.add_handler(drill_words_conv)
 
     app.add_handler(MessageHandler(filters.Regex("^🏠 Home$"), show_home))
     app.add_handler(CallbackQueryHandler(cb_show_menu,       pattern="^menu:home$"))
@@ -2796,6 +3087,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_irreg_page,  pattern=r"^irreg:page:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_irreg_save,  pattern=r"^irreg_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_tense_save,  pattern=r"^tense_save:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_vocab_save,  pattern=r"^vocab_save:\d+$"))
 
     logger.info("Bot started, polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
