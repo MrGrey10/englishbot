@@ -23,7 +23,7 @@ from telegram.ext import (
 
 import db
 import srs
-from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_new_words, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, generate_vocabulary, score_speak_answer, text_to_speech, transcribe_audio
+from ai_generator import generate_grammar_exercises, generate_grammar_lesson, generate_new_words, generate_patterns, generate_phrases, generate_reading_text, generate_speak_sentences, generate_tense_lesson, generate_tense_phrases, score_speak_answer, text_to_speech, transcribe_audio
 from tutor_chat import tutor_open, tutor_reply, roleplay_open, roleplay_reply
 
 load_dotenv()
@@ -46,7 +46,6 @@ REPEAT_ACTIVE = 0
 TENSE_SELECT = 0
 LESSON_LEVEL = 0
 ROLEPLAY_TOPIC, ROLEPLAY_ACTIVE = range(2)
-VOCAB_LEVEL, VOCAB_TOPIC = range(2)
 DRILL_WORDS_ACTIVE = 0
 NEW_WORDS_LEVEL, NEW_WORDS_TOPIC = range(2)
 
@@ -85,7 +84,7 @@ _TENSES = [
 # ── Utility ──────────────────────────────────────────────────────────────────
 
 _FIXED_KB = ReplyKeyboardMarkup(
-    [["🏠 Home", "🔄 Drill"]],
+    [["🏠 Home", "🔄 Drill Phrases"]],
     resize_keyboard=True,
     is_persistent=True,
 )
@@ -110,7 +109,7 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🗣 Speak", callback_data="menu:speak"),
         ],
         [
-            InlineKeyboardButton("🔄 Drill", callback_data="menu:drill"),
+            InlineKeyboardButton("🔄 Drill Phrases", callback_data="menu:drill"),
             InlineKeyboardButton("🕐 Tense", callback_data="menu:tense"),
         ],
         [
@@ -1717,6 +1716,9 @@ async def tense_got_tense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     phrases = result.get("phrases", [])
+    context.user_data["tense_name"] = tense
+    context.user_data["tense_page"] = 1
+    context.user_data["tense_shown"] = [p["en"] for p in phrases]
     context.user_data["tense_phrases"] = phrases
 
     signal_words = " · ".join(result.get("signal_words", []))
@@ -1726,7 +1728,7 @@ async def tense_got_tense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
     text = (
-        f"🕐 <b>{result.get('tense', tense)}</b>\n\n"
+        f"🕐 <b>{result.get('tense', tense)}</b>  <i>Page 1</i>\n\n"
         f"📐 <b>Formation</b>\n{result.get('formation', '')}\n\n"
         f"✅ <b>When to use</b>\n{result.get('when_to_use', '')}\n\n"
         f"⏰ <b>Signal words:</b> {signal_words}\n\n"
@@ -1738,11 +1740,71 @@ async def tense_got_tense(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         for i in range(len(phrases))
     ]
     save_rows = [save_buttons[i:i+3] for i in range(0, len(save_buttons), 3)]
-    markup = InlineKeyboardMarkup(save_rows + [[InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")]])
+    markup = InlineKeyboardMarkup(
+        save_rows + [[
+            InlineKeyboardButton("➡️ Next 6 phrases", callback_data="tense:next"),
+            InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+        ]]
+    )
 
     await wait_msg.delete()
     await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     return ConversationHandler.END
+
+
+async def cb_tense_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    tense = context.user_data.get("tense_name")
+    if not tense:
+        await query.message.reply_text(
+            "Session expired. Please start a new tense lesson from the menu.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    page = context.user_data.get("tense_page", 1) + 1
+    shown = context.user_data.get("tense_shown", [])
+
+    wait_msg = await query.message.reply_text(f"Generating page {page}... ⏳")
+    try:
+        phrases = await generate_tense_phrases(tense, shown)
+    except Exception as e:
+        logger.error("generate_tense_phrases error: %s", e)
+        await wait_msg.edit_text(
+            "Could not generate phrases. Please try again.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    context.user_data["tense_page"] = page
+    context.user_data["tense_shown"] = shown + [p["en"] for p in phrases]
+    context.user_data["tense_phrases"] = phrases
+
+    phrases_text = "\n\n".join(
+        f"{i+1}. <i>{p['en']}</i>\n  🇺🇦 {p['uk']}\n  💡 {p.get('note', '')}"
+        for i, p in enumerate(phrases)
+    )
+    text = (
+        f"🕐 <b>{tense}</b>  <i>Page {page}</i>\n\n"
+        f"💬 <b>More phrases</b>\n\n{phrases_text}"
+    )
+
+    save_buttons = [
+        InlineKeyboardButton(f"💾 {i+1}", callback_data=f"tense_save:{i}")
+        for i in range(len(phrases))
+    ]
+    save_rows = [save_buttons[i:i+3] for i in range(0, len(save_buttons), 3)]
+    markup = InlineKeyboardMarkup(
+        save_rows + [[
+            InlineKeyboardButton("➡️ Next 6 phrases", callback_data="tense:next"),
+            InlineKeyboardButton("🏠 Menu", callback_data="menu:home"),
+        ]]
+    )
+
+    await wait_msg.delete()
+    await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
 
 async def cb_tense_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1758,133 +1820,60 @@ async def cb_tense_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def tense_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    for key in ("tense_name", "tense_page", "tense_shown", "tense_phrases"):
+        context.user_data.pop(key, None)
     await update.message.reply_text("Tense lesson cancelled.", reply_markup=_back_to_menu_keyboard())
     return ConversationHandler.END
 
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
 
-async def vocab_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+_VOCAB_PAGE_SIZE = 8
+
+
+async def vocab_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query:
         await update.callback_query.answer()
         msg = update.callback_query.message
     else:
         msg = update.message
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(l, callback_data=f"vocab_level:{l}") for l in ("A1", "A2", "B1")],
-        [InlineKeyboardButton(l, callback_data=f"vocab_level:{l}") for l in ("B2", "C1", "C2")],
-        [InlineKeyboardButton("🏠 Menu", callback_data="menu:home")],
-    ])
-    await msg.reply_text(
-        "📖 <b>Vocabulary</b>\n\nChoose your level:",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
-    return VOCAB_LEVEL
+    await _show_vocab_page(msg, update.effective_user.id, 0)
 
 
-async def vocab_got_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    level = query.data.split(":")[1]
-    context.user_data["vocab_level"] = level
-
-    topic_buttons = [
-        [InlineKeyboardButton(t, callback_data=f"vocab_topic:{t}") for t in _GEN_TOPICS[i:i+3]]
-        for i in range(0, len(_GEN_TOPICS), 3)
-    ]
-    topic_buttons.append([InlineKeyboardButton("🏠 Menu", callback_data="menu:home")])
-    await query.edit_message_text(
-        f"Level: <b>{level}</b>\n\nChoose a topic or type your own:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(topic_buttons),
-    )
-    return VOCAB_TOPIC
-
-
-async def vocab_got_topic_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    topic = query.data.split(":", 1)[1]
-    context.user_data["vocab_topic"] = None if topic == "Any" else topic
-    await query.edit_message_text(
-        f"Level: <b>{context.user_data['vocab_level']}</b> · Topic: <b>{topic}</b>",
-        parse_mode="HTML",
-    )
-    await _run_vocab_generation(query.message, context)
-    return ConversationHandler.END
-
-
-async def vocab_got_topic_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    topic = update.message.text.strip()
-    context.user_data["vocab_topic"] = topic
-    await update.message.reply_text(
-        f"Level: <b>{context.user_data['vocab_level']}</b> · Topic: <b>{topic}</b>",
-        parse_mode="HTML",
-    )
-    await _run_vocab_generation(update.message, context)
-    return ConversationHandler.END
-
-
-async def _run_vocab_generation(message, context: ContextTypes.DEFAULT_TYPE) -> None:
-    level = context.user_data.get("vocab_level", "B1")
-    topic = context.user_data.get("vocab_topic")
-
-    wait_msg = await message.reply_text("Generating vocabulary... ⏳")
-    try:
-        words = await generate_vocabulary(level, topic)
-    except Exception as e:
-        logger.error("generate_vocabulary error: %s", e)
-        await wait_msg.edit_text(
-            "Could not generate vocabulary. Make sure GROQ_API_KEY is set.",
+async def _show_vocab_page(message, user_id: int, offset: int) -> None:
+    total = db.count_phrases(user_id)
+    if total == 0:
+        await message.reply_text(
+            "📖 <b>Vocabulary</b>\n\nNo saved words yet!\n\nUse 🆕 <b>New Words</b> to discover and save vocabulary.",
+            parse_mode="HTML",
             reply_markup=_back_to_menu_keyboard(),
         )
         return
 
-    context.user_data["vocab_words"] = words
-
-    words_text = "\n\n".join(
-        f"{i+1}. <b>{w['word']}</b> <i>({w.get('pos', '')})</i>\n"
-        f"   🇺🇦 {w['translation']}\n"
-        f"   💬 {w['example']}\n"
-        f"      🇺🇦 {w.get('example_uk', '')}"
-        for i, w in enumerate(words)
+    phrases = db.get_all_phrases(user_id, offset, _VOCAB_PAGE_SIZE)
+    lines = "\n\n".join(
+        f"<b>{p['phrase']}</b> — {p['translation']}"
+        for p in phrases
     )
-    topic_label = topic or "General"
-    text = f"📖 <b>Vocabulary — {level} · {topic_label}</b>\n\n{words_text}"
+    end = min(offset + _VOCAB_PAGE_SIZE, total)
+    text = f"📖 <b>Vocabulary</b> ({total} words · {offset + 1}–{end})\n\n{lines}"
 
-    save_buttons = [
-        InlineKeyboardButton(f"💾 {i+1}", callback_data=f"vocab_save:{i}")
-        for i in range(len(words))
-    ]
-    save_rows = [save_buttons[i:i+4] for i in range(0, len(save_buttons), 4)]
-    markup = InlineKeyboardMarkup(save_rows + [[InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")]])
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"vocab_page:{offset - _VOCAB_PAGE_SIZE}"))
+    if offset + _VOCAB_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"vocab_page:{offset + _VOCAB_PAGE_SIZE}"))
 
-    await wait_msg.delete()
-    await message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+    rows = ([nav] if nav else []) + [[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]
+    await message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
 
 
-async def cb_vocab_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cb_vocab_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    idx = int(query.data.split(":")[1])
-    words = context.user_data.get("vocab_words", [])
-    if idx < len(words):
-        w = words[idx]
-        example = f"({w.get('pos', '')}) {w.get('example', '')}" if w.get('example') else None
-        db.add_phrase(update.effective_user.id, w["word"], w["translation"], example)
-        await query.answer(f"Saved: {w['word']}!")
-    else:
-        await query.answer()
-
-
-async def vocab_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("vocab_level", None)
-    context.user_data.pop("vocab_topic", None)
-    await update.message.reply_text("Vocabulary cancelled.", reply_markup=_back_to_menu_keyboard())
-    return ConversationHandler.END
+    await query.answer()
+    offset = int(query.data.split(":")[1])
+    await _show_vocab_page(query.message, update.effective_user.id, offset)
 
 
 # ── Drill Words ───────────────────────────────────────────────────────────────
@@ -3141,25 +3130,6 @@ def main() -> None:
         ],
     )
 
-    vocab_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("vocab", vocab_start),
-            CallbackQueryHandler(vocab_start, pattern="^menu:vocab$"),
-        ],
-        states={
-            VOCAB_LEVEL: [CallbackQueryHandler(vocab_got_level, pattern=r"^vocab_level:[ABC][12]$")],
-            VOCAB_TOPIC: [
-                CallbackQueryHandler(vocab_got_topic_cb, pattern=r"^vocab_topic:.+$"),
-                MessageHandler(_fixed_btn, show_home),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, vocab_got_topic_text),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", vocab_cancel),
-            MessageHandler(_fixed_btn, show_home),
-            CallbackQueryHandler(cb_show_menu, pattern="^menu:home$"),
-        ],
-    )
 
     drill_words_conv = ConversationHandler(
         entry_points=[
@@ -3215,7 +3185,8 @@ def main() -> None:
         ],
     )
 
-    app.add_handler(vocab_conv)
+    app.add_handler(CommandHandler("vocab", vocab_start))
+    app.add_handler(CallbackQueryHandler(vocab_start, pattern="^menu:vocab$"))
     app.add_handler(drill_words_conv)
     app.add_handler(new_words_conv)
 
@@ -3243,7 +3214,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(cb_irreg_page,  pattern=r"^irreg:page:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_irreg_save,  pattern=r"^irreg_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_tense_save,  pattern=r"^tense_save:\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_vocab_save,  pattern=r"^vocab_save:\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_tense_next,  pattern="^tense:next$"))
+    app.add_handler(CallbackQueryHandler(cb_vocab_page,  pattern=r"^vocab_page:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_nw_save,     pattern=r"^nw_save:\d+$"))
     app.add_handler(CallbackQueryHandler(cb_nw_next,     pattern="^nw:next$"))
 

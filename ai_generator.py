@@ -289,6 +289,43 @@ Return ONLY the JSON object. No markdown, no code fences, no explanation outside
     return json.loads(text)
 
 
+async def generate_tense_phrases(tense: str, shown: list[str] | None = None) -> list[dict]:
+    avoid = (
+        "Avoid repeating these sentences already shown to the user: " + "; ".join(shown)
+        if shown else "Generate completely fresh, varied sentences."
+    )
+
+    prompt = f"""You are an English teacher. Generate exactly 6 new natural everyday English sentences that use the "{tense}" tense.
+
+{avoid}
+
+Each sentence must be different from the others — vary the subject, verb, and context.
+
+Return a JSON array of exactly 6 objects, each with:
+- "en": a natural everyday English sentence using {tense} (avoid textbook clichés)
+- "uk": natural Ukrainian translation
+- "note": one short note about why this tense is used here (max 10 words)
+
+CRITICAL: All Ukrainian text must use REAL, CORRECT Ukrainian words that actually exist.
+Return ONLY the JSON array. No markdown, no code fences, no extra text outside the JSON."""
+
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.choices[0].message.content.strip()
+
+    if text.startswith("```"):
+        text = text.lstrip("`").strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        text = text.rstrip("`").strip()
+
+    return json.loads(text)
+
+
 async def generate_vocabulary(level: str, topic: str | None = None) -> list[dict]:
     level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
     topic_ctx = (
