@@ -2332,30 +2332,23 @@ def _build_repeat_tasks(phrases: list) -> list:
         translation = p["translation"]
         tasks.append({
             "phrase_id": phrase_id,
-            "type": "write",
+            "type": "speak_ua",
             "question": (
-                f"✍️ <b>Write it!</b>\n\n"
-                f"🇺🇦 <i>{translation}</i>\n\n"
-                f"Type the English phrase:"
-            ),
-            "answer": phrase,
-        })
-        tasks.append({
-            "phrase_id": phrase_id,
-            "type": "speak",
-            "question": (
-                f"🎤 <b>Say it!</b>\n\n"
+                f"🎤 <b>Say it in English!</b>\n\n"
                 f"🇺🇦 <i>{translation}</i>\n\n"
                 f"Send a 🎙 voice message with the English phrase:"
             ),
             "answer": phrase,
         })
-        fill_q, fill_answer = _make_fill_question(phrase, translation)
         tasks.append({
             "phrase_id": phrase_id,
-            "type": "fill",
-            "question": fill_q,
-            "answer": fill_answer,
+            "type": "speak_en",
+            "question": (
+                f"🗣️ <b>Use this phrase in a sentence!</b>\n\n"
+                f"<code>{phrase}</code>\n\n"
+                f"Send a 🎙 voice message using this phrase:"
+            ),
+            "answer": phrase,
         })
     return tasks
 
@@ -2398,31 +2391,22 @@ async def _show_repeat_task(message, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     task = tasks[index]
-    phrase_num = index // 3 + 1
-    step_num = index % 3 + 1
+    phrase_num = index // 2 + 1
+    step_num = index % 2 + 1
 
     await message.reply_text(
-        f"<b>Phrase {phrase_num}/{total_phrases} · Step {step_num}/3</b>\n\n{task['question']}",
+        f"<b>Phrase {phrase_num}/{total_phrases} · Step {step_num}/2</b>\n\n{task['question']}",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
     )
 
 
 async def repeat_got_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    tasks = context.user_data.get("repeat_tasks", [])
-    index = context.user_data.get("repeat_index", 0)
-    if index >= len(tasks):
-        return ConversationHandler.END
-
-    task = tasks[index]
-    if task["type"] == "speak":
-        await update.message.reply_text(
-            "🎙 Please send a voice message for this step.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
-        )
-        return REPEAT_ACTIVE
-
-    return await _check_repeat_answer(update.message, context, update.message.text.strip())
+    await update.message.reply_text(
+        "🎙 This is a speaking exercise — please send a voice message.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
+    )
+    return REPEAT_ACTIVE
 
 
 async def repeat_got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2430,14 +2414,6 @@ async def repeat_got_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     index = context.user_data.get("repeat_index", 0)
     if index >= len(tasks):
         return ConversationHandler.END
-
-    task = tasks[index]
-    if task["type"] != "speak":
-        await update.message.reply_text(
-            "✍️ Please type your answer for this step.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
-        )
-        return REPEAT_ACTIVE
 
     tg_file = await update.message.voice.get_file()
     audio_bytes = bytes(await tg_file.download_as_bytearray())
@@ -2464,7 +2440,13 @@ async def _check_repeat_answer(
 
     task = tasks[index]
     phrase_id = task["phrase_id"]
-    is_correct = _normalize_answer(user_answer) == _normalize_answer(task["answer"])
+
+    normalized_answer = _normalize_answer(user_answer)
+    normalized_target = _normalize_answer(task["answer"])
+    if task["type"] == "speak_en":
+        is_correct = normalized_target in normalized_answer
+    else:
+        is_correct = normalized_answer == normalized_target
 
     if not is_correct and phrase_id not in phrase_errors:
         phrase_errors[phrase_id] = True
@@ -2472,7 +2454,10 @@ async def _check_repeat_answer(
     context.user_data["repeat_index"] = index + 1
     is_last = context.user_data["repeat_index"] >= len(tasks)
 
-    result_line = "✅ Correct!" if is_correct else f"❌ Wrong! The answer: <b>{task['answer']}</b>"
+    if is_correct:
+        result_line = "✅ Great!" if task["type"] == "speak_en" else "✅ Correct!"
+    else:
+        result_line = f"❌ The phrase was: <b>{task['answer']}</b>"
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="repeat:next"),
@@ -2518,7 +2503,7 @@ async def _show_repeat_result(message, context: ContextTypes.DEFAULT_TYPE) -> No
         f"<b>Drill Session Complete!</b>\n\n"
         f"{grade}\n\n"
         f"✅ Phrases fully passed: {passed}/{phrase_count}\n\n"
-        f"<i>A phrase passes only when all 3 steps are correct.</i>",
+        f"<i>A phrase passes only when both speaking steps are correct.</i>",
         parse_mode="HTML",
         reply_markup=_back_to_menu_keyboard(),
     )
