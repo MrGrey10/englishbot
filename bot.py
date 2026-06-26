@@ -2292,65 +2292,46 @@ async def lesson_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 # ── Repeat ───────────────────────────────────────────────────────────────────
 
-_STOPWORDS = {
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-    "it", "its", "i", "you", "he", "she", "we", "they", "do", "does",
-    "did", "have", "has", "had", "will", "would", "can", "could", "may",
-    "might", "shall", "should", "must", "and", "or", "but", "not", "no",
-    "so", "if", "that", "this", "these", "those",
-}
-
-
-def _make_fill_question(phrase: str, translation: str) -> tuple[str, str]:
-    words = phrase.split()
-    candidates = [
-        i for i, w in enumerate(words)
-        if re.sub(r"[^\w]", "", w).lower() not in _STOPWORDS
-        and len(re.sub(r"[^\w]", "", w)) > 2
-    ]
-    if not candidates:
-        candidates = list(range(len(words)))
-    idx = random.choice(candidates)
-    clean_word = re.sub(r"[^\w]", "", words[idx]).lower()
-    blanked = words[:]
-    blanked[idx] = "___"
-    question = (
-        f"🔤 <b>Fill in the blank!</b>\n\n"
-        f"<b>{' '.join(blanked)}</b>\n\n"
-        f"🇺🇦 <i>{translation}</i>\n\n"
-        f"Type the missing word:"
-    )
-    return question, clean_word
+_REPEAT_ROUND_SIZE = 10
 
 
 def _build_repeat_tasks(phrases: list) -> list:
-    tasks = []
-    for p in phrases:
-        phrase_id = p["id"]
-        phrase = p["phrase"]
-        translation = p["translation"]
-        tasks.append({
-            "phrase_id": phrase_id,
+    return [
+        {
+            "phrase_id": p["id"],
             "type": "speak_ua",
             "question": (
                 f"🎤 <b>Say it in English!</b>\n\n"
-                f"🇺🇦 <i>{translation}</i>\n\n"
+                f"🇺🇦 <i>{p['translation']}</i>\n\n"
                 f"Send a 🎙 voice message with the English phrase:"
             ),
-            "answer": phrase,
-        })
-        tasks.append({
-            "phrase_id": phrase_id,
-            "type": "speak_en",
-            "question": (
-                f"🗣️ <b>Use this phrase in a sentence!</b>\n\n"
-                f"<code>{phrase}</code>\n\n"
-                f"Send a 🎙 voice message using this phrase:"
-            ),
-            "answer": phrase,
-        })
-    return tasks
+            "answer": p["phrase"],
+        }
+        for p in phrases
+    ]
+
+
+async def _load_repeat_round(
+    message, context: ContextTypes.DEFAULT_TYPE, user_id: int, offset: int
+) -> int:
+    phrases = list(db.get_all_phrases(user_id, offset, _REPEAT_ROUND_SIZE))
+    if not phrases:
+        await message.reply_text(
+            "No more phrases to drill. Head back to the menu!",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    context.user_data["repeat_tasks"] = _build_repeat_tasks(phrases)
+    context.user_data["repeat_index"] = 0
+    context.user_data["repeat_phrase_errors"] = {}
+    context.user_data["repeat_phrase_count"] = len(phrases)
+    context.user_data["repeat_offset"] = offset
+    context.user_data["repeat_user_id"] = user_id
+    context.user_data["repeat_total_count"] = db.count_phrases(user_id)
+
+    await _show_repeat_task(message, context)
+    return REPEAT_ACTIVE
 
 
 async def repeat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2361,41 +2342,28 @@ async def repeat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         msg = update.message
 
     user_id = update.effective_user.id
-    phrases = db.get_all_phrases(user_id, 0, 50)
-    if not phrases:
+    if db.count_phrases(user_id) == 0:
         await msg.reply_text(
             "No saved phrases yet! Add some phrases first.",
             reply_markup=_back_to_menu_keyboard(),
         )
         return ConversationHandler.END
 
-    sample = random.sample(list(phrases), min(5, len(phrases)))
-    tasks = _build_repeat_tasks(sample)
-
-    context.user_data["repeat_tasks"] = tasks
-    context.user_data["repeat_index"] = 0
-    context.user_data["repeat_phrase_errors"] = {}
-    context.user_data["repeat_phrase_count"] = len(sample)
-
-    await _show_repeat_task(msg, context)
-    return REPEAT_ACTIVE
+    return await _load_repeat_round(msg, context, user_id, offset=0)
 
 
 async def _show_repeat_task(message, context: ContextTypes.DEFAULT_TYPE) -> None:
     tasks = context.user_data["repeat_tasks"]
     index = context.user_data["repeat_index"]
-    total_phrases = context.user_data["repeat_phrase_count"]
+    phrase_count = context.user_data["repeat_phrase_count"]
 
     if index >= len(tasks):
         await _show_repeat_result(message, context)
         return
 
     task = tasks[index]
-    phrase_num = index // 2 + 1
-    step_num = index % 2 + 1
-
     await message.reply_text(
-        f"<b>Phrase {phrase_num}/{total_phrases} · Step {step_num}/2</b>\n\n{task['question']}",
+        f"<b>Phrase {index + 1}/{phrase_count}</b>\n\n{task['question']}",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="menu:home")]]),
     )
@@ -2441,12 +2409,7 @@ async def _check_repeat_answer(
     task = tasks[index]
     phrase_id = task["phrase_id"]
 
-    normalized_answer = _normalize_answer(user_answer)
-    normalized_target = _normalize_answer(task["answer"])
-    if task["type"] == "speak_en":
-        is_correct = normalized_target in normalized_answer
-    else:
-        is_correct = normalized_answer == normalized_target
+    is_correct = _normalize_answer(user_answer) == _normalize_answer(task["answer"])
 
     if not is_correct and phrase_id not in phrase_errors:
         phrase_errors[phrase_id] = True
@@ -2454,10 +2417,7 @@ async def _check_repeat_answer(
     context.user_data["repeat_index"] = index + 1
     is_last = context.user_data["repeat_index"] >= len(tasks)
 
-    if is_correct:
-        result_line = "✅ Great!" if task["type"] == "speak_en" else "✅ Correct!"
-    else:
-        result_line = f"❌ The phrase was: <b>{task['answer']}</b>"
+    result_line = "✅ Correct!" if is_correct else f"❌ The phrase was: <b>{task['answer']}</b>"
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Finish 🏁" if is_last else "Next ➡️", callback_data="repeat:next"),
@@ -2475,42 +2435,65 @@ async def repeat_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     total = len(context.user_data.get("repeat_tasks", []))
 
     if index >= total:
-        await _show_repeat_result(query.message, context)
-        return ConversationHandler.END
+        return await _show_repeat_result(query.message, context)
 
     await _show_repeat_task(query.message, context)
     return REPEAT_ACTIVE
 
 
-async def _show_repeat_result(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _show_repeat_result(message, context: ContextTypes.DEFAULT_TYPE) -> int:
     phrase_count = context.user_data.pop("repeat_phrase_count", 0)
     phrase_errors = context.user_data.pop("repeat_phrase_errors", {})
+    offset = context.user_data.pop("repeat_offset", 0)
+    context.user_data.pop("repeat_user_id", None)
+    total_count = context.user_data.pop("repeat_total_count", 0)
     context.user_data.pop("repeat_tasks", None)
     context.user_data.pop("repeat_index", None)
 
     passed = phrase_count - len(phrase_errors)
-
-    if passed == phrase_count:
+    pct = (passed / phrase_count * 100) if phrase_count else 0
+    if pct >= 90:
         grade = "🌟 Perfect! All phrases mastered!"
-    elif passed >= phrase_count * 0.7:
+    elif pct >= 70:
         grade = "🔥 Great job!"
-    elif passed >= phrase_count * 0.5:
+    elif pct >= 50:
         grade = "💪 Good effort!"
     else:
         grade = "📚 Keep practicing!"
 
+    next_offset = offset + phrase_count
+    has_more = next_offset < total_count
+
+    rows = []
+    if has_more:
+        end = min(next_offset + _REPEAT_ROUND_SIZE, total_count)
+        rows.append([InlineKeyboardButton(
+            f"Next Round ➡️ ({next_offset + 1}–{end})",
+            callback_data=f"repeat:next_round:{next_offset}",
+        )])
+    rows.append([InlineKeyboardButton("🏠 Main Menu", callback_data="menu:home")])
+
     await message.reply_text(
-        f"<b>Drill Session Complete!</b>\n\n"
+        f"<b>Round Complete!</b>\n\n"
         f"{grade}\n\n"
-        f"✅ Phrases fully passed: {passed}/{phrase_count}\n\n"
-        f"<i>A phrase passes only when both speaking steps are correct.</i>",
+        f"✅ Phrases passed: {passed}/{phrase_count}",
         parse_mode="HTML",
-        reply_markup=_back_to_menu_keyboard(),
+        reply_markup=InlineKeyboardMarkup(rows),
     )
+    return REPEAT_ACTIVE if has_more else ConversationHandler.END
+
+
+async def repeat_next_round(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    next_offset = int(query.data.split(":")[2])
+    user_id = update.effective_user.id
+    return await _load_repeat_round(query.message, context, user_id, next_offset)
 
 
 async def repeat_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    for key in ("repeat_tasks", "repeat_index", "repeat_phrase_errors", "repeat_phrase_count"):
+    for key in ("repeat_tasks", "repeat_index", "repeat_phrase_errors", "repeat_phrase_count",
+                "repeat_offset", "repeat_user_id", "repeat_total_count"):
         context.user_data.pop(key, None)
     await update.message.reply_text("Drill session cancelled.", reply_markup=_back_to_menu_keyboard())
     return ConversationHandler.END
@@ -3048,6 +3031,7 @@ def main() -> None:
                 MessageHandler(filters.VOICE, repeat_got_voice),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, repeat_got_text),
                 CallbackQueryHandler(repeat_next, pattern="^repeat:next$"),
+                CallbackQueryHandler(repeat_next_round, pattern=r"^repeat:next_round:\d+$"),
             ],
         },
         fallbacks=[
