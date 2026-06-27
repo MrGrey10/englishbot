@@ -443,10 +443,28 @@ Return ONLY the JSON object. No markdown, no code fences, no explanation outside
     return json.loads(text)
 
 
-async def generate_grammar_exercises(level: str, count: int = 5) -> list[dict]:
-    level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+async def generate_grammar_exercises(level: str = "B1", count: int = 5, topic: str | None = None) -> list[dict]:
+    if topic:
+        prompt = f"""Create {count} English fill-in-the-blank exercises focused exclusively on: "{topic}".
 
-    prompt = f"""Create {count} English fill-in-the-blank grammar exercises for level {level} ({level_desc}).
+Rules:
+- Every single exercise must directly test "{topic}" — do not mix in other grammar points
+- Replace exactly ONE word or short phrase in each sentence with ___ (three underscores)
+- The missing part must be the specific {topic} form the learner needs to supply
+- Sentences must be realistic and natural — not textbook-boring
+- Vary subjects, verbs, and contexts across all {count} sentences
+- Write "hint" as one short plain-English sentence saying which rule to apply (no jargon)
+
+Return a JSON array with exactly {count} objects, each with these keys:
+- "sentence": the sentence with ___ replacing the missing word or phrase
+- "answer": the correct word or short phrase (lowercase)
+- "full_sentence": the complete sentence with the answer filled in
+- "hint": one short simple sentence explaining why this answer is correct
+
+Return ONLY the JSON array. No markdown, no code fences, no explanation outside the JSON."""
+    else:
+        level_desc = LEVEL_DESCRIPTIONS.get(level, "intermediate")
+        prompt = f"""Create {count} English fill-in-the-blank grammar exercises for level {level} ({level_desc}).
 
 Rules:
 - Replace exactly ONE word in each sentence with ___ (three underscores)
